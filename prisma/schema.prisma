@@ -1,0 +1,111 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlserver"
+}
+
+model Sede {
+  id        Int      @id @default(autoincrement())
+  nombre    String
+  direccion String?
+  talleres  Taller[]
+}
+
+model Taller {
+  id               Int     @id @default(autoincrement())
+  nombre           String
+  descripcion      String? @db.VarChar(500)
+  edadMinima       Int
+  edadMaxima       Int
+  horario          String
+  cuposTotales     Int
+  cuposDisponibles Int // Campo crítico para concurrencia
+
+  sedeId Int
+  sede   Sede @relation(fields: [sedeId], references: [id])
+
+  inscripciones Inscripcion[]
+
+  profesores       ProfesorTaller[]
+  asistencias   Asistencia[]
+}
+
+model Apoderado {
+  id        Int      @id @default(autoincrement())
+  rut       String   @unique
+  nombre    String
+  telefono  String
+  email     String   @unique
+  password  String   // Hash del RUT del apoderado
+  alumnos   Alumno[]
+  createdAt DateTime @default(now())
+}
+
+model Alumno {
+  id              Int      @id @default(autoincrement())
+  rut             String   @unique
+  nombres         String
+  apellidos       String
+  fechaNacimiento DateTime
+  curso           String? 
+
+  // Relación con Apoderado
+  apoderadoId     Int
+  apoderado       Apoderado @relation(fields: [apoderadoId], references: [id])
+
+  inscripciones   Inscripcion[]
+  createdAt       DateTime @default(now())
+  asistencias     Asistencia[]
+}
+
+model Inscripcion {
+  id    Int      @id @default(autoincrement())
+  fecha DateTime @default(now())
+
+  alumnoId Int
+  alumno   Alumno @relation(fields: [alumnoId], references: [id])
+
+  tallerId Int
+  taller   Taller @relation(fields: [tallerId], references: [id])
+
+  // Restricción: Un alumno no puede inscribirse dos veces al mismo taller
+  @@unique([alumnoId, tallerId])
+}
+
+// Tabla intermedia para asignar profes a talleres
+model ProfesorTaller {
+  id           Int    @id @default(autoincrement())
+  
+  // AQUÍ ESTÁ LA CLAVE: Solo guardamos el ID numérico del usuario de la otra BD.
+  // No ponemos @relation porque la tabla 'user' está en otra base de datos.
+  usuarioId    Int    
+  
+  tallerId     Int
+  taller       Taller @relation(fields: [tallerId], references: [id])
+
+  @@unique([usuarioId, tallerId])
+}
+
+model Asistencia {
+  id     Int      @id @default(autoincrement())
+  fecha  DateTime // La fecha de la clase
+  estado String // 'P' (Presente), 'A' (Ausente), 'J' (Justificado), 'R' (Retraso)
+
+  alumnoId Int
+  alumno   Alumno @relation(fields: [alumnoId], references: [id])
+
+  tallerId Int
+  taller   Taller @relation(fields: [tallerId], references: [id])
+
+  registradoPor Int // ID del usuario (profe/admin) que tomó la lista
+  createdAt     DateTime @default(now())
+
+  // Un alumno solo puede tener una asistencia por taller en una fecha específica
+  @@unique([tallerId, alumnoId, fecha])
+}
+
+
+
+
