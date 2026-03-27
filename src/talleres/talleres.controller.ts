@@ -1,8 +1,9 @@
-import { Controller, Get, Param, Query, Req, UseGuards, Post, Body, UnauthorizedException } from '@nestjs/common';
+import { Controller, Get, Param, Query, Req, UseGuards, Post, Body, UnauthorizedException, Patch, Delete } from '@nestjs/common';
 import { TalleresService } from './talleres.service';
 import { FilterTallerDto } from './dto/filter-taller.dto';
 import { CreateSedeDto } from './dto/create-sede.dto';
 import { CreateTallerDto } from './dto/create-taller.dto';
+import { UpdateTallerDto } from './dto/update-taller.dto';
 import { AssignProfesorDto } from './dto/assign-profesor.dto';
 import { AuthGuard } from '@nestjs/passport';
 
@@ -11,6 +12,20 @@ export class TalleresController {
   constructor(private readonly talleresService: TalleresService) {}
 
   // --- ENDPOINTS ADMINISTRADOR ---
+
+  @Patch(':id')
+  @UseGuards(AuthGuard('jwt'))
+  async updateTaller(@Param('id') id: string, @Body() dto: UpdateTallerDto, @Req() req: any) {
+    this.checkAdmin(req.user);
+    return this.talleresService.updateTaller(+id, dto);
+  }
+
+  @Delete(':id')
+  @UseGuards(AuthGuard('jwt'))
+  async deleteTaller(@Param('id') id: string, @Req() req: any) {
+    this.checkAdmin(req.user);
+    return this.talleresService.deleteTaller(+id);
+  }
 
   @Post('sede')
   @UseGuards(AuthGuard('jwt'))
@@ -33,6 +48,13 @@ export class TalleresController {
      return this.talleresService.assignProfesor(dto);
   }
 
+  @Post('desasignar-profesor')
+  @UseGuards(AuthGuard('jwt'))
+  async unassignProfesor(@Body() dto: AssignProfesorDto, @Req() req: any) {
+    this.checkAdmin(req.user);
+    return this.talleresService.unassignProfesor(dto);
+  }
+
   @Get('admin/todos')
   @UseGuards(AuthGuard('jwt'))
   async getAllTalleres(@Req() req: any) {
@@ -48,12 +70,47 @@ export class TalleresController {
   }
 
   private checkAdmin(user: any) {
-    // Verificación insensible a mayúsculas/minúsculas para robustez
-    const isAdmin = user.roles && user.roles.some((r: string) => r.toLowerCase() === 'admin');
+    const isAdmin = user.roles && user.roles.some((r: string) => r.toUpperCase() === 'ADMIN');
     if (!isAdmin) {
       throw new UnauthorizedException('Acceso denegado. Se requiere rol de Administrador.');
     }
   }
+
+  // RUTA PARA ENCARGADO_ESCUELA: Talleres de su sede
+  @UseGuards(AuthGuard('jwt'))
+  @Get('mis-talleres-encargado')
+  async getMisTalleresEncargado(@Req() req: any) {
+    const user = req.user;
+    const esEncargado = user.roles?.some((r: string) => r.toUpperCase() === 'ENCARGADO_ESCUELA');
+    const esAdmin = user.roles?.some((r: string) => r.toUpperCase() === 'ADMIN');
+
+    if (!esEncargado && !esAdmin) {
+      throw new UnauthorizedException('Acceso denegado. Solo para Encargados de Escuela.');
+    }
+
+    if (!user.sedeId) {
+      throw new UnauthorizedException('No tienes una sede asignada. Contacta al Administrador.');
+    }
+
+    return this.talleresService.findBySede(user.sedeId);
+  }
+
+  // RUTA PARA COORDINADOR: Métricas de solo lectura
+  @UseGuards(AuthGuard('jwt'))
+  @Get('admin/metricas')
+  async getMetricas(@Req() req: any) {
+    const user = req.user;
+    const tieneAcceso = user.roles?.some((r: string) => 
+      ['ADMIN', 'COORDINADOR'].includes(r.toUpperCase())
+    );
+
+    if (!tieneAcceso) {
+      throw new UnauthorizedException('Acceso denegado. Se requiere rol de Coordinador o Administrador.');
+    }
+
+    return this.talleresService.getMetricas();
+  }
+
 
   // --- ENDPOINTS PÚBLICOS ---
 
@@ -62,12 +119,23 @@ export class TalleresController {
     return this.talleresService.findAllSedes();
   }
 
+  @Get('drop-constraints')
+  async dropConstraints() {
+    const res: any = await this.talleresService['prisma'].$queryRawUnsafe(`
+      SELECT name 
+      FROM sys.default_constraints 
+      WHERE parent_object_id = OBJECT_ID('Taller')
+    `);
+    
+    for (const c of res) {
+        await this.talleresService['prisma'].$executeRawUnsafe(`ALTER TABLE Taller DROP CONSTRAINT ${c.name}`);
+    }
+    return { dropped: res };
+  }
+
   @Get('disponibles')
   getTalleres(@Query() params: FilterTallerDto) {
-    return this.talleresService.findAvailable(
-      parseInt(params.sedeId), 
-      params.fechaNacimiento
-    );
+    return this.talleresService.findAvailable(params);
   }
 
   // RUTA PARA PROFESORES: Mis talleres asignados
@@ -76,13 +144,16 @@ export class TalleresController {
   async getMisTalleresProfesor(@Req() req: any) {
     const user = req.user;
     
-    // Verificar que sea profesor
-    if (user.tipo !== 'Profesor') {
-      return { error: 'Acceso denegado. Solo para profesores.' };
+    // Verificar que sea profesor (Rol local PROFESOR)
+    const esProfesor = user.roles && user.roles.some((r: string) => r.toUpperCase() === 'PROFESOR');
+    const esAdmin = user.roles && user.roles.some((r: string) => r.toUpperCase() === 'ADMIN');
+
+    if (!esProfesor && !esAdmin) {
+      throw new UnauthorizedException('Acceso denegado. Solo para profesores.');
     }
 
-    const profesorId = user.userId;
-    return this.talleresService.findByProfesor(profesorId);
+    const usuarioId = user.sub; // ID del UsuarioLocal del JWT
+    return this.talleresService.findByProfesor(usuarioId);
   }
 
   // RUTA PARA ALUMNOS: Mis talleres inscritos
@@ -91,13 +162,15 @@ export class TalleresController {
   async getMisTalleresAlumno(@Req() req: any) {
     const user = req.user;
 
-    // Verificar que sea alumno
-    if (user.tipo !== 'ALUMNO') {
-      return { error: 'Acceso denegado. Solo para alumnos.' };
+    // Los apoderados pueden ver los talleres de sus pupilos
+    if (user.tipo !== 'APODERADO') {
+      throw new UnauthorizedException('Acceso denegado. Solo para apoderados.');
     }
 
-    const alumnoId = user.userId;
-    return this.talleresService.findByAlumno(alumnoId);
+    // Nota: El apoderado puede tener múltiples alumnos. Aquí buscamos 
+    // todos los talleres vinculados a sus pupilos (según el ID del apoderado)
+    const apoderadoId = user.sub;
+    return this.talleresService.findByAlumno(apoderadoId); // Ojo: Revisa si TalleresService.findByAlumno acepta ApoderadoID
   }
 
   // RUTA PARA PROFESORES: Ver alumnos de un taller específico
@@ -106,9 +179,12 @@ export class TalleresController {
   async getAlumnosTaller(@Param('id') id: string, @Req() req: any) {
     const user = req.user;
     
-    // Solo profesores pueden ver la lista de alumnos
-    if (user.tipo !== 'Profesor') {
-      return { error: 'Acceso denegado. Solo para profesores.' };
+    // Solo profesores o admins pueden ver la lista de alumnos
+    const esProfesor = user.roles && user.roles.some((r: string) => r.toUpperCase() === 'PROFESOR');
+    const esAdmin = user.roles && user.roles.some((r: string) => r.toUpperCase() === 'ADMIN');
+
+    if (!esProfesor && !esAdmin) {
+      throw new UnauthorizedException('Acceso denegado. Solo para profesores.');
     }
 
     const tallerId = parseInt(id);

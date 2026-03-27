@@ -4,8 +4,6 @@ import { Type } from 'class-transformer';
 export enum EstadoAsistencia {
   PRESENTE = 'P',
   AUSENTE = 'A',
-  JUSTIFICADO = 'J',
-  RETRASO = 'R',
 }
 
 class DetalleAsistencia {

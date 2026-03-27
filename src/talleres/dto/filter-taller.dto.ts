@@ -1,11 +1,23 @@
-import { IsDateString, IsNotEmpty, IsNumberString } from 'class-validator';
+import { IsDateString, IsOptional, IsString, IsNumberString } from 'class-validator';
 
 export class FilterTallerDto {
   @IsNumberString()
-  @IsNotEmpty()
-  sedeId: string;
+  @IsOptional()
+  sedeId?: string;
 
-  @IsDateString() // Valida que envíen fecha formato YYYY-MM-DD
-  @IsNotEmpty()
-  fechaNacimiento: string;
+  @IsDateString()
+  @IsOptional()
+  fechaNacimiento?: string;
+
+  @IsString()
+  @IsOptional()
+  search?: string;
+
+  @IsNumberString()
+  @IsOptional()
+  minAge?: string;
+
+  @IsNumberString()
+  @IsOptional()
+  maxAge?: string;
 }

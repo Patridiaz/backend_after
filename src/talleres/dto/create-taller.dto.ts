@@ -1,4 +1,27 @@
-import { IsNotEmpty, IsString, IsInt, IsOptional, Min } from 'class-validator';
+import { IsNotEmpty, IsString, IsInt, IsOptional, Min, IsArray, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class HorarioTallerDto {
+  @IsString()
+  @IsNotEmpty()
+  diaSemana: string;
+
+  @IsInt()
+  @Min(0)
+  horaInicio: number;
+
+  @IsInt()
+  @Min(0)
+  minutoInicio: number;
+
+  @IsInt()
+  @Min(0)
+  horaFin: number;
+
+  @IsInt()
+  @Min(0)
+  minutoFin: number;
+}
 
 export class CreateTallerDto {
   @IsString()
@@ -17,10 +40,10 @@ export class CreateTallerDto {
   @Min(0)
   edadMaxima: number;
 
-  @IsString()
-  @IsNotEmpty()
-  horario: string;
-
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => HorarioTallerDto)
+  horarios: HorarioTallerDto[];
   @IsInt()
   @Min(1)
   cuposTotales: number;

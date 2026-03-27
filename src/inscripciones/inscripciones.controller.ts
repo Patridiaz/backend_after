@@ -1,11 +1,30 @@
-import { Controller, Post, Body, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Body, BadRequestException, Get } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateInscripcioneDto } from './dto/create-inscripcione.dto';
 import * as bcrypt from 'bcrypt';
+import { differenceInYears } from 'date-fns';
 
 @Controller('inscripciones')
 export class InscripcionesController {
   constructor(private readonly prisma: PrismaService) {}
+
+  @Get('establecimientos')
+  async getEstablecimientos() {
+    return this.prisma.establecimiento.findMany({
+      orderBy: { nombre: 'asc' }
+    });
+  }
+
+  @Get('cursos')
+  async getCursos() {
+    return this.prisma.cursoAlumno.findMany({
+      orderBy: [
+        { descGrado: 'asc' },
+        { letraCurso: 'asc' }
+      ]
+    });
+  }
+
 
   @Post('nueva')
   async inscribir(@Body() dto: CreateInscripcioneDto) {
@@ -22,7 +41,20 @@ export class InscripcionesController {
     // 2. Transacción
     return await this.prisma.$transaction(async (tx) => {
       
-      // A. Buscar o Crear Apoderado
+      // A. Validar taller y EDAD
+      const taller = await tx.taller.findUnique({ where: { id: dto.tallerId } });
+      if (!taller) throw new BadRequestException('El taller no existe.');
+
+      const fechaNac = new Date(dto.fechaNacimiento);
+      const edadAlumno = differenceInYears(new Date(), fechaNac);
+
+      if (edadAlumno < taller.edadMinima || edadAlumno > taller.edadMaxima) {
+        throw new BadRequestException(
+          `El alumno tiene ${edadAlumno} años y el taller es para edades entre ${taller.edadMinima} y ${taller.edadMaxima} años.`
+        );
+      }
+
+      // B. Buscar o Crear Apoderado
       let apoderado = await tx.apoderado.findUnique({ 
         where: { rut: dto.rutApoderado } 
       });
@@ -35,14 +67,37 @@ export class InscripcionesController {
           data: {
             rut: dto.rutApoderado,
             nombre: dto.nombreApoderado,
-            telefono: dto.telefonoApoderado,
+            telefono: dto.telefonoApoderado || dto.telefono || 'N/A',
             email: dto.emailApoderado,
             password: hashedPassword
           }
         });
       }
 
-      // B. Buscar o Crear Alumno
+      // B.1 Buscar o Crear Establecimiento (con normalización para evitar duplicados)
+      let establecimientoId: number | null = null;
+      if (dto.establecimientoNombre) {
+        const estNombre = dto.establecimientoNombre.trim();
+        if (estNombre !== '') {
+          // Buscamos primero por nombre normalizado (insensible a mayúsculas)
+          const estExistente = await tx.establecimiento.findFirst({
+            where: {
+              nombre: { contains: estNombre }
+            }
+          });
+
+          if (estExistente) {
+            establecimientoId = estExistente.id;
+          } else {
+            const nuevo = await tx.establecimiento.create({
+              data: { nombre: estNombre }
+            });
+            establecimientoId = nuevo.id;
+          }
+        }
+      }
+
+      // B.2 Buscar o Crear Alumno
       let alumno = await tx.alumno.findUnique({ where: { rut: dto.rut } });
 
       if (!alumno) {
@@ -52,18 +107,19 @@ export class InscripcionesController {
             nombres: dto.nombres,
             apellidos: dto.apellidos,
             fechaNacimiento: new Date(dto.fechaNacimiento),
-            curso: 'N/A',
-            apoderadoId: apoderado.id // Vinculamos con el apoderado
+            apoderadoId: apoderado.id, // Vinculamos con el apoderado
+            establecimientoId: establecimientoId, // Vinculamos establecimiento
           }
         });
       } else {
-        // Si el alumno ya existe pero con otro apoderado, actualizamos la relación
-        if (alumno.apoderadoId !== apoderado.id) {
-          alumno = await tx.alumno.update({
-            where: { id: alumno.id },
-            data: { apoderadoId: apoderado.id }
-          });
-        }
+        // Si el alumno ya existe, actualizamos su curso, apoderado y establecimiento si es necesario
+        alumno = await tx.alumno.update({
+          where: { id: alumno.id },
+          data: { 
+            apoderadoId: apoderado.id,
+            establecimientoId: establecimientoId || alumno.establecimientoId, // Mantenemos el anterior si no viene uno nuevo
+          }
+        });
       }
 
       // C. Descontar Cupos

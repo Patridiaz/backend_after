@@ -7,29 +7,44 @@ datasource db {
 }
 
 model Sede {
-  id        Int      @id @default(autoincrement())
-  nombre    String
-  direccion String?
-  talleres  Taller[]
+  id              Int            @id @default(autoincrement())
+  nombre          String
+  direccion       String?
+  talleres        Taller[]
+  alumnosSige     AlumnoSige[]
+  usuariosLocales UsuarioLocal[]
 }
 
 model Taller {
-  id               Int     @id @default(autoincrement())
-  nombre           String
-  descripcion      String? @db.VarChar(500)
-  edadMinima       Int
-  edadMaxima       Int
-  horario          String
+  id          Int     @id @default(autoincrement())
+  nombre      String
+  descripcion String? @db.VarChar(500)
+  edadMinima  Int
+  edadMaxima  Int
+
+  horarios HorarioTaller[]
+
   cuposTotales     Int
   cuposDisponibles Int // Campo crítico para concurrencia
 
   sedeId Int
-  sede   Sede @relation(fields: [sedeId], references: [id])
+  sede   Sede @relation(fields: [sedeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   inscripciones Inscripcion[]
 
-  profesores       ProfesorTaller[]
-  asistencias   Asistencia[]
+  profesores  ProfesorTaller[]
+  asistencias Asistencia[]
+}
+
+model HorarioTaller {
+  id           Int    @id @default(autoincrement())
+  tallerId     Int
+  taller       Taller @relation(fields: [tallerId], references: [id], onDelete: Cascade)
+  diaSemana    String // Ej: "Martes"
+  horaInicio   Int
+  minutoInicio Int
+  horaFin      Int
+  minutoFin    Int
 }
 
 model Apoderado {
@@ -38,9 +53,24 @@ model Apoderado {
   nombre    String
   telefono  String
   email     String   @unique
-  password  String   // Hash del RUT del apoderado
+  password  String // Hash del RUT del apoderado
   alumnos   Alumno[]
   createdAt DateTime @default(now())
+}
+
+model Establecimiento {
+  id      Int      @id @default(autoincrement())
+  nombre  String   @unique
+  alumnos Alumno[]
+}
+
+model CursoAlumno {
+  id         Int      @id @default(autoincrement())
+  descGrado  String
+  letraCurso String
+  alumnos    Alumno[]
+
+  @@unique([descGrado, letraCurso])
 }
 
 model Alumno {
@@ -49,15 +79,23 @@ model Alumno {
   nombres         String
   apellidos       String
   fechaNacimiento DateTime
-  curso           String? 
+  curso           String?
 
   // Relación con Apoderado
-  apoderadoId     Int
-  apoderado       Apoderado @relation(fields: [apoderadoId], references: [id])
+  apoderadoId Int
+  apoderado   Apoderado @relation(fields: [apoderadoId], references: [id])
 
-  inscripciones   Inscripcion[]
-  createdAt       DateTime @default(now())
-  asistencias     Asistencia[]
+  // Relación con Establecimiento Estudiantil
+  establecimientoId Int?
+  establecimiento   Establecimiento? @relation(fields: [establecimientoId], references: [id])
+
+  // Relación Estricta con Curso
+  cursoAlumnoId Int?
+  cursoAlumno   CursoAlumno? @relation(fields: [cursoAlumnoId], references: [id])
+
+  inscripciones Inscripcion[]
+  createdAt     DateTime      @default(now())
+  asistencias   Asistencia[]
 }
 
 model Inscripcion {
@@ -74,16 +112,36 @@ model Inscripcion {
   @@unique([alumnoId, tallerId])
 }
 
-// Tabla intermedia para asignar profes a talleres
+model UsuarioLocal {
+  id     Int    @id @default(autoincrement())
+  email  String @unique
+  nombre String
+
+  // ID del usuario en ticket-service (opcional si es un usuario puramente local)
+  externalId Int? @unique
+
+  rol String @default("PROFESOR") // ADMIN, COORDINADOR, ENCARGADO_ESCUELA, PROFESOR
+
+  // Relación opcional con Sede (Específico para ENCARGADO_ESCUELA)
+  sedeId Int?
+  sede   Sede? @relation(fields: [sedeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  // Relación con los talleres que imparte (Si es PROFESOR)
+  talleres ProfesorTaller[]
+}
+
+// Tabla intermedia para asignar usuarios (local o externos) a talleres
 model ProfesorTaller {
-  id           Int    @id @default(autoincrement())
-  
-  // AQUÍ ESTÁ LA CLAVE: Solo guardamos el ID numérico del usuario de la otra BD.
-  // No ponemos @relation porque la tabla 'user' está en otra base de datos.
-  usuarioId    Int    
-  
-  tallerId     Int
-  taller       Taller @relation(fields: [tallerId], references: [id])
+  id Int @id @default(autoincrement())
+
+  usuarioId Int
+  usuario   UsuarioLocal @relation(fields: [usuarioId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  tallerId Int
+  taller   Taller @relation(fields: [tallerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([usuarioId, tallerId])
 }
@@ -106,6 +164,49 @@ model Asistencia {
   @@unique([tallerId, alumnoId, fecha])
 }
 
+// ----------------------------------------------------
+// TABLA PARA CARGA MASIVA SIGE
+// ----------------------------------------------------
+model AlumnoSige {
+  id Int @id @default(autoincrement())
 
+  // Relacionamos al Alumno SIGE directamente con un Establecimiento (Sede)
+  sedeId Int
+  sede   Sede @relation(fields: [sedeId], references: [id])
 
+  // Campos basados en la planilla SIGE compartida
+  anio                 Int?
+  rbd                  Int?
+  codTipoEnsenanza     Int?
+  codGrado             Int?
+  descGrado            String?
+  letraCurso           String?
+  run                  String?
+  dv                   String?
+  genero               String?
+  nombres              String?
+  apellidoPaterno      String?
+  apellidoMaterno      String?
+  direccion            String?
+  comunaResidencia     String?
+  codigoComuna         String?
+  email                String?
+  telefono             String?
+  celular              String?
+  fechaNacimiento      String? // Lo guardaremos como string para evitar errores de parseo de excel
+  codigoEtnia          String?
+  fechaIncorporacion   String?
+  fechaRetiro          String?
+  porcentajeAsistencia Float?
+  promedioFinal        Float?
 
+  // Campos concatenados calculados
+  runc    String
+  nombrec String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Limitamos para no crear alumnos duplicados por año en la misma sede
+  @@unique([runc, anio, sedeId])
+}

@@ -1,15 +1,56 @@
-import { Injectable, ConflictException } from '@nestjs/common';
+import { Injectable, ConflictException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { differenceInYears } from 'date-fns';
 import { CreateSedeDto } from './dto/create-sede.dto';
 import { CreateTallerDto } from './dto/create-taller.dto';
+import { UpdateTallerDto } from './dto/update-taller.dto';
 import { AssignProfesorDto } from './dto/assign-profesor.dto';
+import { FilterTallerDto } from './dto/filter-taller.dto';
 
 @Injectable()
 export class TalleresService {
   constructor(private prisma: PrismaService) {}
 
   // --- ADMINISTRACIÓN ---
+
+  async updateTaller(id: number, dto: UpdateTallerDto) {
+    // 1. Verificar existencia
+    const existe = await this.prisma.taller.findUnique({ where: { id } });
+    if (!existe) throw new NotFoundException('El taller solicitado no existe.');
+
+    const { horarios, ...restDto } = dto;
+    const dataUpdate: any = { ...restDto };
+
+    // 2. Si cambian los cupos totales, ajustar disponibles
+    if (dto.cuposTotales !== undefined) {
+      const inscritos = await this.prisma.inscripcion.count({ where: { tallerId: id } });
+      const nuevosDisponibles = dto.cuposTotales - inscritos;
+      dataUpdate.cuposDisponibles = nuevosDisponibles < 0 ? 0 : nuevosDisponibles;
+    }
+
+    // 3. Update normal y de horarios
+    if (horarios) {
+      dataUpdate.horarios = {
+        deleteMany: {},
+        create: horarios
+      };
+    }
+
+    return this.prisma.taller.update({
+      where: { id },
+      data: dataUpdate
+    });
+  }
+
+  async deleteTaller(id: number) {
+    // Verificar si hay inscritos antes de borrar
+    const inscritos = await this.prisma.inscripcion.count({ where: { tallerId: id } });
+    if (inscritos > 0) {
+      throw new ConflictException('No se puede eliminar un taller que ya tiene alumnos inscritos.');
+    }
+
+    return this.prisma.taller.delete({ where: { id } });
+  }
 
   async createSede(dto: CreateSedeDto) {
     return this.prisma.sede.create({
@@ -18,24 +59,27 @@ export class TalleresService {
   }
 
   async createTaller(dto: CreateTallerDto) {
-    const { sedeId, ...tallerData } = dto;
+    const { sedeId, horarios, ...tallerData } = dto;
     return this.prisma.taller.create({
       data: {
         ...tallerData,
         cuposDisponibles: dto.cuposTotales, // Al inicio, disponibles = totales
-        sedeId: sedeId
+        sedeId: sedeId,
+        horarios: {
+          create: horarios
+        }
       }
     });
   }
 
   async assignProfesor(dto: AssignProfesorDto) {
+    const { usuarioId, tallerId } = dto;
+
     // Verificamos si ya existe la asignación
-    const existing = await this.prisma.profesorTaller.findUnique({
+    const existing = await this.prisma.profesorTaller.findFirst({
       where: {
-        usuarioId_tallerId: {
-          usuarioId: dto.usuarioId,
-          tallerId: dto.tallerId
-        }
+        tallerId,
+        usuarioId,
       }
     });
 
@@ -45,9 +89,28 @@ export class TalleresService {
 
     return this.prisma.profesorTaller.create({
       data: {
-        usuarioId: dto.usuarioId,
-        tallerId: dto.tallerId
+        usuarioId,
+        tallerId
       }
+    });
+  }
+
+  async unassignProfesor(dto: AssignProfesorDto) {
+    const { usuarioId, tallerId } = dto;
+
+    const assignment = await this.prisma.profesorTaller.findFirst({
+      where: {
+        tallerId,
+        usuarioId,
+      }
+    });
+
+    if (!assignment) {
+      throw new NotFoundException('No se encontró la asignación especificada.');
+    }
+
+    return this.prisma.profesorTaller.delete({
+      where: { id: assignment.id }
     });
   }
 
@@ -56,7 +119,14 @@ export class TalleresService {
     return this.prisma.taller.findMany({
       include: {
         sede: true,
-        profesores: true, // Incluimos la relación intermedia
+        horarios: true,
+        profesores: {
+          include: {
+            usuario: {
+              select: { id: true, nombre: true, email: true, rol: true }
+            }
+          }
+        },
         _count: {
           select: { inscripciones: true }
         }
@@ -66,25 +136,26 @@ export class TalleresService {
   }
 
   // Traer usuarios con rol PROFESOR desde ticket-service
+  // Traer usuarios con rol PROFESOR desde ticket-service + Profesores Locales
+  /**
+   * Obtiene todos los usuarios que han sido asignados como PROFESOR localmente
+   */
   async getAllProfesores() {
-    const query = `
-      SELECT DISTINCT
-        u.id, 
-        u.email, 
-        u.name,
-        u.isActive
-      FROM [ticket-service].[dbo].[user] u
-      JOIN [ticket-service].[dbo].[user_roles] ur ON u.id = ur.userId
-      JOIN [ticket-service].[dbo].[rolUser] r ON ur.rolUserId = r.id
-      WHERE (r.nombre = 'PROFESOR' OR r.nombre = 'profesor') AND u.isActive = 1
-      ORDER BY u.name ASC
-    `;
-
     try {
-      const profesores = await this.prisma.$queryRawUnsafe(query);
-      return profesores;
+      const locales = await this.prisma.usuarioLocal.findMany({
+        where: { 
+          rol: 'PROFESOR',
+          isActive: true 
+        },
+        select: { id: true, email: true, nombre: true, isActive: true, externalId: true }
+      });
+
+      return locales.map(l => ({ 
+        ...l, 
+        tipo: l.externalId ? 'EXTERNO' : 'LOCAL' 
+      })).sort((a, b) => a.nombre.localeCompare(b.nombre));
     } catch (error) {
-      console.error("Error obteniendo profesores:", error);
+      console.error("Error obteniendo profesores locales:", error);
       return [];
     }
   }
@@ -95,29 +166,61 @@ export class TalleresService {
     return this.prisma.sede.findMany();
   }
 
-  async findAvailable(sedeId: number, fechaNacimientoStr: string) {
-    const fechaNacimiento = new Date(fechaNacimientoStr);
-    const edad = differenceInYears(new Date(), fechaNacimiento);
+  async findAvailable(params: FilterTallerDto) {
+    const { sedeId, fechaNacimiento, search, minAge, maxAge } = params;
+
+    const where: any = {
+      cuposDisponibles: { gt: 0 },
+    };
+
+    // Filtro por Sede (SedeOpcional)
+    if (sedeId) {
+      where.sedeId = parseInt(sedeId);
+    }
+
+    // Filtro por Búsqueda de Texto (Search)
+    if (search) {
+      where.nombre = {
+        contains: search
+      };
+    }
+
+    // Filtro por Fecha de Nacimiento (Edad Exacta)
+    if (fechaNacimiento) {
+      const fechaNac = new Date(fechaNacimiento);
+      const edad = differenceInYears(new Date(), fechaNac);
+      where.edadMinima = { lte: edad };
+      where.edadMaxima = { gte: edad };
+    }
+
+    // Filtro por Rango de Edad (Collides)
+    if (minAge || maxAge) {
+      const min = minAge ? parseInt(minAge) : 0;
+      const max = maxAge ? parseInt(maxAge) : 99;
+      
+      // La edad del taller debe colisionar con el rango solicitado
+      where.OR = [
+        {
+          AND: [
+            { edadMinima: { lte: max } },
+            { edadMaxima: { gte: min } }
+          ]
+        }
+      ];
+    }
 
     return this.prisma.taller.findMany({
-      where: {
-        sedeId: sedeId,
-        cuposDisponibles: { gt: 0 },
-        edadMinima: { lte: edad },
-        edadMaxima: { gte: edad },
+      where: where,
+      include: {
+        sede: true, // Respuesta incluye el objeto Sede completo
+        horarios: true
       },
-      select: {
-        id: true,
-        nombre: true,
-        horario: true,
-        cuposDisponibles: true,
-        descripcion: true
-      }
+      orderBy: { nombre: 'asc' }
     });
   }
 
   /**
-   * Talleres asignados a un PROFESOR (desde ticket-service)
+   * Talleres asignados a un PROFESOR (su carga académica)
    */
   async findByProfesor(profesorId: number) {
     return this.prisma.taller.findMany({
@@ -130,6 +233,12 @@ export class TalleresService {
       },
       include: {
         sede: true,
+        horarios: true,
+        profesores: {
+          include: {
+            usuario: { select: { nombre: true, email: true } }
+          }
+        },
         _count: {
           select: { 
             inscripciones: true,
@@ -141,19 +250,159 @@ export class TalleresService {
   }
 
   /**
-   * Talleres en los que está inscrito un ALUMNO
+   * Talleres de una SEDE específica (para ENCARGADO_ESCUELA)
    */
-  async findByAlumno(alumnoId: number) {
-    const inscripciones = await this.prisma.inscripcion.findMany({
-      where: { alumnoId: alumnoId },
+  async findBySede(sedeId: number) {
+    return this.prisma.taller.findMany({
+      where: { sedeId },
       include: {
+        sede: true,
+        horarios: true,
+        profesores: {
+          include: {
+            usuario: { select: { id: true, nombre: true, email: true, rol: true } }
+          }
+        },
+        _count: {
+          select: { inscripciones: true, asistencias: true }
+        }
+      },
+      orderBy: { nombre: 'asc' }
+    });
+  }
+
+  /**
+   * Métricas completas del sistema (para COORDINADOR y ADMIN)
+   */
+  async getMetricas() {
+    // --- 1. KPIs Generales ---
+    const [totalTalleres, totalInscritos, totalPresentes, totalAusentes] = await Promise.all([
+      this.prisma.taller.count(),
+      this.prisma.inscripcion.count(),
+      this.prisma.asistencia.count({ where: { estado: 'P' } }),
+      this.prisma.asistencia.count({ where: { estado: 'A' } }),
+    ]);
+
+    const porcentajeAsistencia = (totalPresentes + totalAusentes) > 0
+      ? Math.round((totalPresentes / (totalPresentes + totalAusentes)) * 100)
+      : 0;
+
+    // --- 2. Inscripciones por Taller ---
+    const inscripcionesPorTaller = await this.prisma.taller.findMany({
+      select: {
+        id: true,
+        nombre: true,
+        _count: { select: { inscripciones: true } }
+      },
+      orderBy: { inscripciones: { _count: 'desc' } }
+    });
+
+    // --- 3. Inscripciones por Taller y Sede ---
+    const talleresPorSede = await this.prisma.sede.findMany({
+      include: {
+        talleres: {
+          select: {
+            id: true,
+            nombre: true,
+            _count: { select: { inscripciones: true } }
+          }
+        }
+      },
+      orderBy: { nombre : 'asc' }
+    });
+
+    const inscripcionesPorTallerYSede = talleresPorSede.map(sede => ({
+      sede: sede.nombre,
+      talleres: sede.talleres.map(t => ({
+        id: t.id,
+        nombre: t.nombre,
+        inscritos: t._count.inscripciones
+      }))
+    }));
+
+    // --- 4. Inscripciones por Edad (de los alumnos inscritos) ---
+    const alumnosInscritos = await this.prisma.inscripcion.findMany({
+      include: {
+        alumno: { select: { fechaNacimiento: true } },
+        taller: { select: { nombre: true } }
+      }
+    });
+
+    const RANGOS = [
+      { label: '5-7 años', min: 5, max: 7 },
+      { label: '8-10 años', min: 8, max: 10 },
+      { label: '11-13 años', min: 11, max: 13 },
+      { label: '14-17 años', min: 14, max: 17 },
+    ];
+
+    const hoy = new Date();
+    const calcularEdad = (fechaNac: Date | string | null) => {
+      if (!fechaNac) return null;
+      const nac = new Date(fechaNac);
+      const edad = hoy.getFullYear() - nac.getFullYear();
+      const m = hoy.getMonth() - nac.getMonth();
+      return (m < 0 || (m === 0 && hoy.getDate() < nac.getDate())) ? edad - 1 : edad;
+    };
+
+    // Mapa: { rango -> { tallerNombre -> count } }
+    const mapaPorEdadTaller: Record<string, Record<string, number>> = {};
+    RANGOS.forEach(r => { mapaPorEdadTaller[r.label] = {}; });
+
+    for (const inscripcion of alumnosInscritos) {
+      const edad = calcularEdad(inscripcion.alumno.fechaNacimiento as any);
+      if (edad === null) continue;
+      const rango = RANGOS.find(r => edad >= r.min && edad <= r.max);
+      if (!rango) continue;
+      const tNombre = inscripcion.taller.nombre;
+      mapaPorEdadTaller[rango.label][tNombre] = (mapaPorEdadTaller[rango.label][tNombre] || 0) + 1;
+    }
+
+    const inscripcionesPorEdad = RANGOS.map(rango => ({
+      rango: rango.label,
+      talleres: Object.entries(mapaPorEdadTaller[rango.label]).map(([nombre, inscritos]) => ({
+        nombre,
+        inscritos
+      })).sort((a, b) => b.inscritos - a.inscritos)
+    }));
+
+    // --- 5. Máximo Interés por Edad (el taller más popular de cada rango) ---
+    const maximoInteresPorEdad = inscripcionesPorEdad.map(r => ({
+      rango: r.rango,
+      tallerMasPopular: r.talleres[0]?.nombre || 'Sin datos',
+      inscritos: r.talleres[0]?.inscritos || 0
+    }));
+
+    return {
+      resumen: { totalTalleres, totalInscritos, totalPresentes, totalAusentes, porcentajeAsistencia },
+      inscripcionesPorTaller: inscripcionesPorTaller.map(t => ({
+        id: t.id,
+        nombre: t.nombre,
+        inscritos: t._count.inscripciones
+      })),
+      inscripcionesPorTallerYSede,
+      inscripcionesPorEdad,
+      maximoInteresPorEdad
+    };
+  }
+
+  /**
+   * Talleres en los que están inscritos los alumnos de un APODERADO
+   */
+  async findByAlumno(apoderadoId: number) {
+    const inscripciones = await this.prisma.inscripcion.findMany({
+      where: { 
+        alumno: {
+          apoderadoId: apoderadoId
+        }
+      },
+      include: {
+        alumno: true,
         taller: {
           include: {
             sede: true,
+            horarios: true,
             asistencias: {
-              where: {
-                alumnoId: alumnoId
-              },
+              // Necesitamos las asistencias solo de este alumno
               orderBy: {
                 fecha: 'desc'
               }
@@ -165,11 +414,12 @@ export class TalleresService {
 
     return inscripciones.map(inscripcion => ({
       id: inscripcion.taller.id,
+      nombreAlumno: `${inscripcion.alumno.nombres} ${inscripcion.alumno.apellidos}`,
       nombre: inscripcion.taller.nombre,
-      horario: inscripcion.taller.horario,
+      horario: inscripcion.taller.horarios.map(h => `${h.diaSemana} ${String(h.horaInicio).padStart(2,'0')}:${String(h.minutoInicio).padStart(2,'0')}${h.horaFin !== null ? ` a ${String(h.horaFin).padStart(2,'0')}:${String(h.minutoFin || 0).padStart(2,'0')}` : ''}`).join(' | '),
       sede: inscripcion.taller.sede.nombre,
       fechaInscripcion: inscripcion.fecha,
-      asistencias: inscripcion.taller.asistencias.map(a => ({
+      asistencias: inscripcion.taller.asistencias.filter(a => a.alumnoId === inscripcion.alumnoId).map(a => ({
         fecha: a.fecha,
         estado: a.estado,
         estadoTexto: this.getEstadoTexto(a.estado)
@@ -238,8 +488,6 @@ export class TalleresService {
     const estados = {
       'P': 'Presente',
       'A': 'Ausente',
-      'J': 'Justificado',
-      'R': 'Retraso'
     };
     return estados[estado] || estado;
   }

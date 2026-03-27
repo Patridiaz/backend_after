@@ -8,7 +8,7 @@ export class AuthController {
 
   @Post('login')
   async login(@Body() loginDto: LoginDto) {
-    // El servicio maneja automáticamente si es profesor o alumno
+    // El servicio maneja automáticamente si es profesor, administrativo o apoderado
     return this.authService.login(loginDto.email, loginDto.password);
   }
 }

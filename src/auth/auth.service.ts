@@ -11,85 +11,130 @@ export class AuthService {
   ) {}
 
   /**
-   * LOGIN PARA PROFESORES Y ADMINS (desde BD ticket-service)
+   * LOGIN UNIFICADO (PROFESORES, ENCARGADOS, COORDINADORES, ADMINS)
+   * Valida contra ticket-service pero otorga roles LOCALES
    */
-  async loginProfesor(email: string, password: string) {
-    const query = `
-      SELECT 
-        u.id, 
-        u.email, 
-        u.password, 
-        u.name,
-        r.nombre as rolNombre
-      FROM [ticket-service].[dbo].[user] u
-      JOIN [ticket-service].[dbo].[user_roles] ur ON u.id = ur.userId
-      JOIN [ticket-service].[dbo].[rolUser] r ON ur.rolUserId = r.id
-      WHERE u.email = @p0 AND u.isActive = 1
-    `;
+  async login(email: string, password: string) {
+    // 1. Intentar validar identidad contra ticket-service
+    const identity = await this.validateExternalIdentity(email, password);
+    
+    if (identity) {
+      // 2. Buscar si este usuario tiene un perfil local específico para Talleres
+      let localUser = await this.prisma.usuarioLocal.findFirst({
+        where: { 
+          OR: [
+            { externalId: identity.id },
+            { email: email.toLowerCase() }
+          ],
+          isActive: true
+        },
+        include: { sede: true }
+      });
 
-    try {
-      const resultados: any[] = await this.prisma.$queryRaw`
-        SELECT 
-          u.id, 
-          u.email, 
-          u.password, 
-          u.name,
-          r.nombre as rolNombre
-        FROM [ticket-service].[dbo].[user] u
-        JOIN [ticket-service].[dbo].[user_roles] ur ON u.id = ur.userId
-        JOIN [ticket-service].[dbo].[rolUser] r ON ur.rolUserId = r.id
-        WHERE u.email = ${email} AND u.isActive = 1
-      `;
-
-      if (!resultados || resultados.length === 0) {
-        return null;
+      // AUTO-PROVISIONAMIENTO PARA ADMINS CORPORATIVOS
+      // Si eres Admin en ticket-service pero no estás en la base local, te creamos automáticamente
+      if (!localUser && identity.rolesExternos.includes('ADMIN')) {
+        localUser = await this.prisma.usuarioLocal.create({
+          data: {
+            email: identity.email.toLowerCase(),
+            externalId: identity.id,
+            nombre: identity.name,
+            rol: 'ADMIN',
+            isActive: true
+          },
+          include: { sede: true }
+        });
       }
 
-      const usuario = resultados[0];
-      const roles = [...new Set(resultados.map(r => r.rolNombre))];
-
-      // Validar que tenga rol PROFESOR o ADMIN
-      const esProfesorOAdmin = roles.some(rol => 
-        rol === 'Profesor' || rol === 'Admin'
-      );
-
-      if (!esProfesorOAdmin) {
-        return null;
+      if (!localUser) {
+        // En este sistema, solo entran los que han sido asignados explícitamente por el Admin
+        throw new UnauthorizedException('No tienes permisos asignados en este sistema de talleres. Contacta al Administrador.');
       }
 
-      // Validar contraseña (bcrypt o texto plano)
-      let esValido = false;
-      try {
-        esValido = await bcrypt.compare(password, usuario.password);
-      } catch {
-        esValido = (password === usuario.password);
+      // 3. Vincular externalId si no lo tenía (Auto-healing)
+      if (localUser.externalId !== identity.id) {
+        localUser = await this.prisma.usuarioLocal.update({
+          where: { id: localUser.id },
+          data: { externalId: identity.id },
+          include: { sede: true }
+        });
       }
 
-      if (!esValido) {
-        return null;
-      }
-
-      // Generar token
+      // 4. Generar token con ROL LOCAL
       const payload = { 
-        email: usuario.email, 
-        sub: usuario.id,
-        roles: roles,
-        nombre: usuario.name,
-        tipo: 'Profesor' // Identificador del tipo de usuario
+        email: localUser.email, 
+        sub: localUser.id,
+        roles: [localUser.rol],
+        nombre: localUser.nombre,
+        sedeId: localUser.sedeId,
+        nombreSede: localUser.sede?.nombre || null,
+        tipo: 'USUARIO_INTERNO' 
       };
 
       return {
         access_token: this.jwtService.sign(payload),
         usuario: {
-          id: usuario.id,
-          nombre: usuario.name,
-          email: usuario.email,
-          roles: roles,
-          tipo: 'profesor'
+          id: localUser.id,
+          nombre: localUser.nombre,
+          email: localUser.email,
+          rol: localUser.rol,
+          sedeId: localUser.sedeId,
+          nombreSede: localUser.sede?.nombre || null,
+          tipo: 'USUARIO_INTERNO'
         }
       };
-    } catch (error) {
-      console.error("Error consultando BD ticket-service:", error);
+    }
+
+    // 5. Si no es usuario interno, intentar como APODERADO (Local en bd_after)
+    const apoderadoResult = await this.loginApoderado(email, password);
+    if (apoderadoResult) return apoderadoResult;
+
+    throw new UnauthorizedException('Credenciales inválidas');
+  }
+
+  /**
+   * Valida que el usuario exista en ticket-service y la contraseña coincida
+   */
+  /**
+   * Valida que el usuario exista en ticket-service y la contraseña coincida
+   * Además devuelve los roles que tiene en esa base de datos
+   */
+  private async validateExternalIdentity(email: string, password: string) {
+    try {
+      // Obtenemos el usuario y sus roles en ticket-service
+      const resultados: any[] = await this.prisma.$queryRaw`
+        SELECT 
+          u.id, u.email, u.password, u.name,
+          COALESCE(r.nombre, 'SIN_ROL') as rolExterno
+        FROM [ticket-service].[dbo].[user] u
+        LEFT JOIN [ticket-service].[dbo].[user_roles] ur ON u.id = ur.userId
+        LEFT JOIN [ticket-service].[dbo].[rolUser] r ON ur.rolUserId = r.id
+        WHERE u.email = ${email} AND u.isActive = 1
+      `;
+
+      if (!resultados || resultados.length === 0) return null;
+
+      const user = resultados[0];
+      const rolesExternos = [...new Set(resultados.map(r => (r.rolExterno || '').toUpperCase()))];
+
+      // Validar contraseña
+      let esValido = false;
+      try {
+        esValido = await bcrypt.compare(password, user.password);
+      } catch {
+        esValido = (password === user.password);
+      }
+
+      if (!esValido) return null;
+
+      return {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        rolesExternos: rolesExternos
+      };
+    } catch (e) {
+      console.error("Error validando identidad externa:", e);
       return null;
     }
   }
@@ -109,7 +154,7 @@ export class AuthService {
               inscripciones: {
                 include: {
                   taller: {
-                    include: { sede: true }
+                    include: { sede: true, horarios: true }
                   }
                 }
               }
@@ -149,7 +194,7 @@ export class AuthService {
           id: i.taller.id,
           nombre: i.taller.nombre,
           sede: i.taller.sede.nombre,
-          horario: i.taller.horario
+          horario: i.taller.horarios?.map(h => `${h.diaSemana} ${h.horaInicio.toString().padStart(2, '0')}:${h.minutoInicio.toString().padStart(2, '0')}${h.horaFin !== null ? ` a ${h.horaFin.toString().padStart(2, '0')}:${(h.minutoFin || 0).toString().padStart(2, '0')}` : ''}`).join(' | ') || ''
         }))
       }));
 
@@ -172,24 +217,4 @@ export class AuthService {
     }
   }
 
-  /**
-   * LOGIN UNIFICADO - Intenta ambos tipos de autenticación
-   */
-  async login(email: string, password: string) {
-    // Primero intentar como profesor/admin
-    let resultado = await this.loginProfesor(email, password);
-    
-    if (resultado) {
-      return resultado;
-    }
-
-    // Si no es profesor, intentar como APODERADO
-    resultado = await this.loginApoderado(email, password);
-    
-    if (resultado) {
-      return resultado;
-    }
-
-    throw new UnauthorizedException('Credenciales inválidas');
-  }
 }
