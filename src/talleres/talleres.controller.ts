@@ -58,14 +58,14 @@ export class TalleresController {
   @Get('admin/todos')
   @UseGuards(AuthGuard('jwt'))
   async getAllTalleres(@Req() req: any) {
-    this.checkAdmin(req.user);
+    this.checkAdminOrCoordinador(req.user);
     return this.talleresService.getAllTalleres();
   }
 
   @Get('admin/profesores')
   @UseGuards(AuthGuard('jwt'))
   async getListaProfesores(@Req() req: any) {
-    this.checkAdmin(req.user);
+    this.checkAdminOrCoordinador(req.user);
     return this.talleresService.getAllProfesores();
   }
 
@@ -75,6 +75,16 @@ export class TalleresController {
       throw new UnauthorizedException('Acceso denegado. Se requiere rol de Administrador.');
     }
   }
+
+  private checkAdminOrCoordinador(user: any) {
+    const hasRole = user.roles && user.roles.some((r: string) => 
+      ['ADMIN', 'COORDINADOR'].includes(r.toUpperCase())
+    );
+    if (!hasRole) {
+      throw new UnauthorizedException('Acceso denegado. Se requiere rol de Administrador o Coordinador.');
+    }
+  }
+
 
   // RUTA PARA ENCARGADO_ESCUELA: Talleres de su sede
   @UseGuards(AuthGuard('jwt'))
@@ -99,21 +109,20 @@ export class TalleresController {
   @UseGuards(AuthGuard('jwt'))
   @Get('admin/metricas')
   async getMetricas(@Req() req: any) {
-    const user = req.user;
-    const tieneAcceso = user.roles?.some((r: string) => 
-      ['ADMIN', 'COORDINADOR'].includes(r.toUpperCase())
-    );
-
-    if (!tieneAcceso) {
-      throw new UnauthorizedException('Acceso denegado. Se requiere rol de Coordinador o Administrador.');
-    }
-
+    this.checkAdminOrCoordinador(req.user);
     return this.talleresService.getMetricas();
+  }
+
+  // RUTA PARA COORDINADOR: Ranking de asistencia
+  @UseGuards(AuthGuard('jwt'))
+  @Get('admin/ranking-asistencia')
+  async getRankingAsistencia(@Req() req: any) {
+    this.checkAdminOrCoordinador(req.user);
+    return this.talleresService.getRankingAsistencia();
   }
 
 
   // --- ENDPOINTS PÚBLICOS ---
-
   @Get('sedes')
   getSedes() {
     return this.talleresService.findAllSedes();
@@ -170,7 +179,7 @@ export class TalleresController {
     // Nota: El apoderado puede tener múltiples alumnos. Aquí buscamos 
     // todos los talleres vinculados a sus pupilos (según el ID del apoderado)
     const apoderadoId = user.sub;
-    return this.talleresService.findByAlumno(apoderadoId); // Ojo: Revisa si TalleresService.findByAlumno acepta ApoderadoID
+    return this.talleresService.findByAlumno(apoderadoId);
   }
 
   // RUTA PARA PROFESORES: Ver alumnos de un taller específico
@@ -182,8 +191,9 @@ export class TalleresController {
     // Solo profesores o admins pueden ver la lista de alumnos
     const esProfesor = user.roles && user.roles.some((r: string) => r.toUpperCase() === 'PROFESOR');
     const esAdmin = user.roles && user.roles.some((r: string) => r.toUpperCase() === 'ADMIN');
+    const esCoordinador = user.roles && user.roles.some((r: string) => r.toUpperCase() === 'COORDINADOR');
 
-    if (!esProfesor && !esAdmin) {
+    if (!esProfesor && !esAdmin && !esCoordinador) {
       throw new UnauthorizedException('Acceso denegado. Solo para profesores.');
     }
 

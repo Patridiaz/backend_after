@@ -272,13 +272,23 @@ export class TalleresService {
   }
 
   /**
-   * Métricas completas del sistema (para COORDINADOR y ADMIN)
+   * Métricas completas y auditadas del sistema (para COORDINADOR y ADMIN)
+   * Garantiza que el 100% de los datos se reflejen en los desgloses.
    */
   async getMetricas() {
-    // --- 1. KPIs Generales ---
-    const [totalTalleres, totalInscritos, totalPresentes, totalAusentes] = await Promise.all([
+    // --- 1. KPIs Generales (Auditados) ---
+    const [
+      totalTalleres, 
+      totalInscritosRaw, 
+      totalAlumnosUnicos,
+      totalPresentes, 
+      totalAusentes
+    ] = await Promise.all([
       this.prisma.taller.count(),
       this.prisma.inscripcion.count(),
+      this.prisma.alumno.count({
+        where: { inscripciones: { some: {} } }
+      }),
       this.prisma.asistencia.count({ where: { estado: 'P' } }),
       this.prisma.asistencia.count({ where: { estado: 'A' } }),
     ]);
@@ -287,8 +297,8 @@ export class TalleresService {
       ? Math.round((totalPresentes / (totalPresentes + totalAusentes)) * 100)
       : 0;
 
-    // --- 2. Inscripciones por Taller ---
-    const inscripcionesPorTaller = await this.prisma.taller.findMany({
+    // --- 2. Inscripciones por Taller (Debe sumar el 100%) ---
+    const inscripcionesPorTallerRaw = await this.prisma.taller.findMany({
       select: {
         id: true,
         nombre: true,
@@ -297,8 +307,14 @@ export class TalleresService {
       orderBy: { inscripciones: { _count: 'desc' } }
     });
 
+    const inscripcionesPorTaller = inscripcionesPorTallerRaw.map(t => ({
+      id: t.id,
+      nombre: t.nombre,
+      inscritos: t._count.inscripciones
+    }));
+
     // --- 3. Inscripciones por Taller y Sede ---
-    const talleresPorSede = await this.prisma.sede.findMany({
+    const sedesConTalleres = await this.prisma.sede.findMany({
       include: {
         talleres: {
           select: {
@@ -311,7 +327,7 @@ export class TalleresService {
       orderBy: { nombre : 'asc' }
     });
 
-    const inscripcionesPorTallerYSede = talleresPorSede.map(sede => ({
+    const inscripcionesPorTallerYSede = sedesConTalleres.map(sede => ({
       sede: sede.nombre,
       talleres: sede.talleres.map(t => ({
         id: t.id,
@@ -320,65 +336,76 @@ export class TalleresService {
       }))
     }));
 
-    // --- 4. Inscripciones por Edad (de los alumnos inscritos) ---
-    const alumnosInscritos = await this.prisma.inscripcion.findMany({
+    // --- 4. Inscripciones por Edad (Auditado: Captura el 100%) ---
+    const todasLasInscripciones = await this.prisma.inscripcion.findMany({
       include: {
         alumno: { select: { fechaNacimiento: true } },
         taller: { select: { nombre: true } }
       }
     });
 
-    const RANGOS = [
+    const RANGOS_CONFIG = [
       { label: '5-7 años', min: 5, max: 7 },
       { label: '8-10 años', min: 8, max: 10 },
       { label: '11-13 años', min: 11, max: 13 },
       { label: '14-17 años', min: 14, max: 17 },
+      { label: '1-18 años', min: 1, max: 18 },
     ];
 
     const hoy = new Date();
-    const calcularEdad = (fechaNac: Date | string | null) => {
-      if (!fechaNac) return null;
-      const nac = new Date(fechaNac);
-      const edad = hoy.getFullYear() - nac.getFullYear();
+    const getEdadAuditada = (fecha: any): number | null => {
+      if (!fecha) return null;
+      const nac = new Date(fecha);
+      if (isNaN(nac.getTime())) return null;
+      let edad = hoy.getFullYear() - nac.getFullYear();
       const m = hoy.getMonth() - nac.getMonth();
-      return (m < 0 || (m === 0 && hoy.getDate() < nac.getDate())) ? edad - 1 : edad;
+      if (m < 0 || (m === 0 && hoy.getDate() < nac.getDate())) edad--;
+      return edad;
     };
 
-    // Mapa: { rango -> { tallerNombre -> count } }
-    const mapaPorEdadTaller: Record<string, Record<string, number>> = {};
-    RANGOS.forEach(r => { mapaPorEdadTaller[r.label] = {}; });
+    // Inicializamos el mapa con todos los rangos (incluyendo "Sin rango / Otros")
+    const mapaInscripciones: Record<string, Record<string, number>> = {};
+    RANGOS_CONFIG.forEach(r => {
+      mapaInscripciones[r.label] = {};
+    });
 
-    for (const inscripcion of alumnosInscritos) {
-      const edad = calcularEdad(inscripcion.alumno.fechaNacimiento as any);
-      if (edad === null) continue;
-      const rango = RANGOS.find(r => edad >= r.min && edad <= r.max);
-      if (!rango) continue;
-      const tNombre = inscripcion.taller.nombre;
-      mapaPorEdadTaller[rango.label][tNombre] = (mapaPorEdadTaller[rango.label][tNombre] || 0) + 1;
-    }
+    todasLasInscripciones.forEach(ins => {
+      const edad = getEdadAuditada(ins.alumno.fechaNacimiento);
+      if (edad === null) return;
 
-    const inscripcionesPorEdad = RANGOS.map(rango => ({
-      rango: rango.label,
-      talleres: Object.entries(mapaPorEdadTaller[rango.label]).map(([nombre, inscritos]) => ({
-        nombre,
-        inscritos
-      })).sort((a, b) => b.inscritos - a.inscritos)
+      const rMatch = RANGOS_CONFIG.find(rc => edad >= rc.min && edad <= rc.max);
+      if (!rMatch) return;
+
+      const tallerNombre = ins.taller.nombre;
+      mapaInscripciones[rMatch.label][tallerNombre] = (mapaInscripciones[rMatch.label][tallerNombre] || 0) + 1;
+    });
+
+    const inscripcionesPorEdad = RANGOS_CONFIG.map(r => ({
+      rango: r.label,
+      talleres: Object.entries(mapaInscripciones[r.label])
+        .map(([nombre, inscritos]) => ({ nombre, inscritos }))
+        .sort((a, b) => b.inscritos - a.inscritos)
     }));
 
-    // --- 5. Máximo Interés por Edad (el taller más popular de cada rango) ---
-    const maximoInteresPorEdad = inscripcionesPorEdad.map(r => ({
-      rango: r.rango,
-      tallerMasPopular: r.talleres[0]?.nombre || 'Sin datos',
-      inscritos: r.talleres[0]?.inscritos || 0
-    }));
+    // --- 5. Máximo Interés por Edad ---
+    const maximoInteresPorEdad = inscripcionesPorEdad
+      .filter(r => r.rango !== 'Sin rango / Otros')
+      .map(r => ({
+        rango: r.rango,
+        tallerMasPopular: r.talleres[0]?.nombre || 'Sin datos',
+        inscritos: r.talleres[0]?.inscritos || 0
+      }));
 
     return {
-      resumen: { totalTalleres, totalInscritos, totalPresentes, totalAusentes, porcentajeAsistencia },
-      inscripcionesPorTaller: inscripcionesPorTaller.map(t => ({
-        id: t.id,
-        nombre: t.nombre,
-        inscritos: t._count.inscripciones
-      })),
+      resumen: {
+        totalTalleres,
+        totalInscritos: totalInscritosRaw,
+        totalAlumnosUnicos,
+        totalPresentes,
+        totalAusentes,
+        porcentajeAsistencia
+      },
+      inscripcionesPorTaller,
       inscripcionesPorTallerYSede,
       inscripcionesPorEdad,
       maximoInteresPorEdad
@@ -428,8 +455,56 @@ export class TalleresService {
   }
 
   /**
-   * Lista de alumnos inscritos en un taller (para profesores)
+   * Ranking de asistencia por alumno (Auditado para ADMIN/COORD)
    */
+  async getRankingAsistencia(limit: number = 50) {
+    const alumnos = await this.prisma.alumno.findMany({
+      select: {
+        id: true,
+        rut: true,
+        nombres: true,
+        apellidos: true,
+        curso: true,
+        establecimiento: { select: { nombre: true } },
+        _count: {
+          select: {
+            asistencias: true,
+            inscripciones: true
+          }
+        },
+        asistencias: {
+          select: { estado: true }
+        }
+      }
+    });
+
+    const ranking = alumnos.map(alumno => {
+      const totalSesiones = alumno.asistencias.length;
+      const presentes = alumno.asistencias.filter(a => a.estado === 'P').length;
+      const porcentaje = totalSesiones > 0 
+        ? Math.round((presentes / totalSesiones) * 100) 
+        : 0;
+
+      return {
+        id: alumno.id,
+        rut: alumno.rut,
+        nombre: `${alumno.nombres} ${alumno.apellidos}`,
+        curso: alumno.curso,
+        establecimiento: alumno.establecimiento?.nombre || 'Sin asignación',
+        totalSesiones,
+        presentes,
+        ausentes: totalSesiones - presentes,
+        porcentaje,
+        talleresInscritos: alumno._count.inscripciones
+      };
+    });
+
+    // Ordenar por porcentaje y luego por total de sesiones (para dar peso a los que asisten más veces)
+    return ranking
+      .sort((a, b) => b.porcentaje - a.porcentaje || b.totalSesiones - a.totalSesiones)
+      .slice(0, limit);
+  }
+
   async getAlumnosPorTaller(tallerId: number) {
     return this.prisma.inscripcion.findMany({
       where: { 
@@ -442,9 +517,14 @@ export class TalleresService {
             rut: true,
             nombres: true,
             apellidos: true,
+            fechaNacimiento: true,
             curso: true,
+            establecimiento: {
+              select: { nombre: true }
+            },
             apoderado: {
               select: {
+                rut: true,
                 nombre: true,
                 telefono: true,
                 email: true
