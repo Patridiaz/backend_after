@@ -19,12 +19,15 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     // Retornamos el usuario con toda la información del token
     return { 
-      userId: payload.sub, 
+      sub: payload.sub,       // ID numérico del usuario local
+      userId: payload.sub,    // Alias para compatibilidad
       email: payload.email, 
       roles: payload.roles,
       nombre: payload.nombre,
-      tipo: payload.tipo, // 'PROFESOR' o 'ALUMNO'
-      rut: payload.rut // Solo para alumnos
+      tipo: payload.tipo,
+      rut: payload.rut,
+      sedeId: payload.sedeId ? Number(payload.sedeId) : null,       // ← Sede del Encargado
+      nombreSede: payload.nombreSede ?? null,
     };
   }
 }

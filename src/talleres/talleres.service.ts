@@ -7,6 +7,12 @@ import { UpdateTallerDto } from './dto/update-taller.dto';
 import { AssignProfesorDto } from './dto/assign-profesor.dto';
 import { FilterTallerDto } from './dto/filter-taller.dto';
 
+// ─── Fecha de Inicio Oficial del Programa ───────────────────────────────────
+// Cambiar aquí si se modifica el calendario escolar.
+const FECHA_INICIO_PROGRAMA = new Date('2026-03-27T00:00:00');
+const DIAS_LECTIVOS = [1, 2, 3, 4, 5]; // Lunes a Viernes (0=Domingo, 6=Sábado)
+
+
 @Injectable()
 export class TalleresService {
   constructor(private prisma: PrismaService) {}
@@ -506,10 +512,27 @@ export class TalleresService {
   }
 
   async getAlumnosPorTaller(tallerId: number) {
-    return this.prisma.inscripcion.findMany({
-      where: { 
-        tallerId: tallerId,
-      },
+    // 1. Obtener el taller con su horario para generar el calendario
+    const taller = await this.prisma.taller.findUnique({
+      where: { id: tallerId },
+      include: {
+        sede: true,
+        horarios: true,
+        profesores: {
+          include: { usuario: { select: { nombre: true, email: true } } }
+        }
+      }
+    });
+
+    if (!taller) return null;
+
+    // 2. Calcular calendario real desde la fecha de inicio
+    const fechasHabilitadas = this.generarFechasHabilitadas(taller.horarios);
+    const sesionesEsperadas = fechasHabilitadas.length;
+
+    // 3. Obtener alumnos inscritos con sus asistencias en ESTE taller
+    const inscripciones = await this.prisma.inscripcion.findMany({
+      where: { tallerId },
       include: {
         alumno: {
           select: {
@@ -519,36 +542,55 @@ export class TalleresService {
             apellidos: true,
             fechaNacimiento: true,
             curso: true,
-            establecimiento: {
-              select: { nombre: true }
-            },
+            establecimiento: { select: { nombre: true } },
             apoderado: {
-              select: {
-                rut: true,
-                nombre: true,
-                telefono: true,
-                email: true
-              }
+              select: { rut: true, nombre: true, telefono: true, email: true }
             },
             asistencias: {
-              where: {
-                tallerId: tallerId
-              },
-              orderBy: {
-                fecha: 'desc'
-              },
-              take: 10 // Últimas 10 asistencias
+              where: { tallerId },
+              select: { fecha: true, estado: true },
+              orderBy: { fecha: 'desc' }
             }
           }
         }
       },
-      orderBy: {
-        alumno: {
-          apellidos: 'asc'
-        }
-      }
+      orderBy: { alumno: { apellidos: 'asc' } }
     });
+
+    // 4. Enriquecer cada alumno con su % de asistencia real
+    const alumnos = inscripciones.map(ins => {
+      const presentes = ins.alumno.asistencias.filter(a => a.estado === 'P').length;
+      const ausentes  = ins.alumno.asistencias.filter(a => a.estado === 'A').length;
+      const porcentaje = sesionesEsperadas > 0
+        ? Math.round((presentes / sesionesEsperadas) * 100)
+        : null;
+
+      return {
+        ...ins.alumno,
+        presentes,
+        ausentes,
+        sesionesRegistradas: ins.alumno.asistencias.length,
+        sesionesEsperadas,
+        porcentaje,
+        alerta: ins.alumno.asistencias.length < sesionesEsperadas, // hubo clases sin registro
+      };
+    });
+
+    return {
+      taller: {
+        id: taller.id,
+        nombre: taller.nombre,
+        sede: taller.sede?.nombre,
+        horarioTexto: taller.horarios.map(h => h.diaSemana).join(', '),
+        profesores: taller.profesores.map(p => p.usuario.nombre),
+      },
+      fechaInicioPrograma: FECHA_INICIO_PROGRAMA.toISOString().split('T')[0],
+      fechasHabilitadas,     // Array de "YYYY-MM-DD" → para el DatePicker del frontend
+      sesionesEsperadas,
+      alumnos
+    };
   }
+
 
   async findOne(id: number) {
     return this.prisma.taller.findUnique({ 
@@ -562,6 +604,70 @@ export class TalleresService {
         }
       }
     });
+  }
+
+  // ─── Motor de Calendario Escolar ────────────────────────────────────────────
+
+  /**
+   * Mapea el nombre del día en español al número JS (0=Dom, 1=Lun, ..., 6=Sáb)
+   */
+  private diaNombreANumero(dia: string): number | null {
+    const mapa: Record<string, number> = {
+      'domingo': 0,
+      'lunes': 1,
+      'martes': 2,
+      'miércoles': 3, 'miercoles': 3,
+      'jueves': 4,
+      'viernes': 5,
+      'sábado': 6, 'sabado': 6,
+    };
+    return mapa[dia?.toLowerCase().trim()] ?? null;
+  }
+
+  /**
+   * Genera todas las fechas habilitadas para un taller desde FECHA_INICIO_PROGRAMA
+   * hasta hoy (o fecha fin si se provee), según los días del horario del taller.
+   * Solo incluye días lectivos (Lunes-Viernes).
+   */
+  generarFechasHabilitadas(horarios: { diaSemana: string }[], fechaFin?: Date): string[] {
+    const hoy = fechaFin ?? new Date();
+    hoy.setHours(23, 59, 59, 999);
+
+    // Si el programa aún no ha comenzado, retornar vacío
+    if (hoy < FECHA_INICIO_PROGRAMA) return [];
+
+    // Obtenemos los números de día únicos del horario del taller
+    const diasClase = [...new Set(
+      horarios
+        .map(h => this.diaNombreANumero(h.diaSemana))
+        .filter(d => d !== null && DIAS_LECTIVOS.includes(d))
+    )] as number[];
+
+    if (diasClase.length === 0) return [];
+
+    const fechas: string[] = [];
+    const cursor = new Date(FECHA_INICIO_PROGRAMA);
+
+    while (cursor <= hoy) {
+      if (diasClase.includes(cursor.getDay())) {
+        // Formato YYYY-MM-DD en hora local de Chile
+        const yyyy = cursor.getFullYear();
+        const mm = String(cursor.getMonth() + 1).padStart(2, '0');
+        const dd = String(cursor.getDate()).padStart(2, '0');
+        fechas.push(`${yyyy}-${mm}-${dd}`);
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return fechas;
+  }
+
+  /**
+   * Calcula cuántas sesiones DEBIERON haber ocurrido hasta hoy
+   * para un taller con el horario dado.
+   */
+  calcularSesionesEsperadas(horarios: { diaSemana: string }[]): number {
+    return this.generarFechasHabilitadas(horarios).length;
   }
 
   private getEstadoTexto(estado: string): string {
