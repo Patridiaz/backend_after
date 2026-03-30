@@ -6,8 +6,13 @@ import { ValidationPipe } from '@nestjs/common';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  app.enableCors();
-  
+  app.enableCors({
+    origin: 'http://localhost:4200', // El origen de tu Angular
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    credentials: true,
+    allowedHeaders: 'Content-Type, Accept, Authorization',
+  });
+
   // Aumentar límite de carga útil (payload) para carga masiva de SIGE
   const { json, urlencoded } = require('express');
   app.use(json({ limit: '50mb' }));
