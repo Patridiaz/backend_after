@@ -9,7 +9,7 @@ import { FilterTallerDto } from './dto/filter-taller.dto';
 
 // ─── Fecha de Inicio Oficial del Programa ───────────────────────────────────
 // Cambiar aquí si se modifica el calendario escolar.
-const FECHA_INICIO_PROGRAMA = new Date('2026-03-27T00:00:00');
+const FECHA_INICIO_PROGRAMA = new Date('2026-04-13T00:00:00');
 const DIAS_LECTIVOS = [1, 2, 3, 4, 5]; // Lunes a Viernes (0=Domingo, 6=Sábado)
 
 

@@ -108,6 +108,18 @@ model Inscripcion {
   tallerId Int
   taller   Taller @relation(fields: [tallerId], references: [id])
 
+  parentesco String? @db.VarChar(100)
+
+  // Ficha Médica y Consentimiento (Nuevos campos)
+  enfermedadCronica           Boolean @default(false)
+  enfermedadCronicaDetalle    String? @db.VarChar(1000)
+  tratamientoMedico           String? @db.VarChar(1000)
+  alergias                    String? @db.VarChar(1000)
+  necesidadesEspeciales       Boolean @default(false)
+  necesidadesEspecialesDetalle String? @db.VarChar(1000)
+  apoyoEscolar                String? @db.VarChar(1000)
+  usoImagen                   Boolean @default(false)
+
   // Restricción: Un alumno no puede inscribirse dos veces al mismo taller
   @@unique([alumnoId, tallerId])
 }

@@ -122,6 +122,17 @@ export class TalleresController {
   }
 
 
+  // RUTA MAESTRA: Configuración Escolar SIGE
+  @Get('config/escolar')
+  getEscolarConfig() {
+    return {
+      fechaInicio: '2026-03-27',
+      diasLectivos: [1, 2, 3, 4, 5], // Lunes a Viernes
+      periodoLectivo: 'Primer Semestre 2026',
+      estado: 'Activo'
+    };
+  }
+
   // --- ENDPOINTS PÚBLICOS ---
   @Get('sedes')
   getSedes() {
@@ -192,8 +203,9 @@ export class TalleresController {
     const esProfesor = user.roles && user.roles.some((r: string) => r.toUpperCase() === 'PROFESOR');
     const esAdmin = user.roles && user.roles.some((r: string) => r.toUpperCase() === 'ADMIN');
     const esCoordinador = user.roles && user.roles.some((r: string) => r.toUpperCase() === 'COORDINADOR');
+    const esEncargado = user.roles && user.roles.some((r: string) => r.toUpperCase() === 'ENCARGADO_ESCUELA');
 
-    if (!esProfesor && !esAdmin && !esCoordinador) {
+    if (!esProfesor && !esAdmin && !esCoordinador && !esEncargado) {
       throw new UnauthorizedException('Acceso denegado. Solo para profesores.');
     }
 

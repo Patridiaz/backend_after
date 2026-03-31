@@ -147,7 +147,7 @@ export class AuthService {
     try {
       // 1. Buscar apoderado por email
       const apoderado = await this.prisma.apoderado.findUnique({
-        where: { email: email },
+        where: { email: email.toLowerCase() },
         include: {
           alumnos: {
             include: {
@@ -167,8 +167,9 @@ export class AuthService {
         return null;
       }
 
-      // 2. Validar contraseña (RUT del apoderado)
-      const esValido = await bcrypt.compare(passwordRut, apoderado.password);
+      // 2. Validar contraseña (RUT del apoderado normalizado: sin puntos ni guion)
+      const pwdNormalizado = passwordRut.trim().toUpperCase().replace(/[^0-9K]/g, '');
+      const esValido = await bcrypt.compare(pwdNormalizado, apoderado.password);
 
       if (!esValido) {
         return null;

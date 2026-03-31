@@ -1,4 +1,4 @@
-import { Controller, Post, Body, BadRequestException, Get } from '@nestjs/common';
+import { Controller, Post, Body, BadRequestException, Get, Param } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateInscripcioneDto } from './dto/create-inscripcione.dto';
 import * as bcrypt from 'bcrypt';
@@ -25,14 +25,118 @@ export class InscripcionesController {
     });
   }
 
+  @Get('verificar-alumno/:rut')
+  async verificarAlumno(@Param('rut') rut: string) {
+    const rutLimpio = rut.trim().toUpperCase().replace(/[^0-9K]/g, '');
+    const rutConGuion = rutLimpio.length > 1 ? rutLimpio.slice(0, -1) + '-' + rutLimpio.slice(-1) : rutLimpio;
+
+    // 1. Buscar en Alumnos ya inscritos
+    const alumnoExistente = await this.prisma.alumno.findFirst({
+      where: { 
+        OR: [
+          { rut: rutLimpio },
+          { rut: rutConGuion }
+        ]
+      },
+      include: {
+        establecimiento: true,
+        apoderado: true,
+        inscripciones: {
+          orderBy: { id: 'desc' },
+          take: 1
+        }
+      }
+    });
+
+    if (alumnoExistente) {
+      return {
+        encontrado: true,
+        origen: 'EXISTENTE',
+        datos: {
+          nombres: alumnoExistente.nombres,
+          apellidos: alumnoExistente.apellidos,
+          fechaNacimiento: alumnoExistente.fechaNacimiento,
+          establecimientoNombre: alumnoExistente.establecimiento?.nombre,
+          // Si ya tiene apoderado, también lo devolvemos para autocompletar
+          apoderado: {
+            rut: alumnoExistente.apoderado.rut,
+            nombre: alumnoExistente.apoderado.nombre,
+            email: alumnoExistente.apoderado.email,
+            telefono: alumnoExistente.apoderado.telefono,
+            parentesco: alumnoExistente.inscripciones[0]?.parentesco || null
+          }
+        }
+      };
+    }
+
+    // 2. Buscar en AlumnoSige (Pre-carga masiva)
+    const alumnoSige = await this.prisma.alumnoSige.findFirst({
+      where: { 
+        OR: [
+          { runc: rutLimpio },
+          { runc: rutConGuion }
+        ]
+      },
+      include: { sede: true },
+      orderBy: { anio: 'desc' } // El más reciente
+    });
+
+    if (alumnoSige) {
+      return {
+        encontrado: true,
+        origen: 'SIGE',
+        datos: {
+          nombres: alumnoSige.nombres,
+          apellidos: `${alumnoSige.apellidoPaterno} ${alumnoSige.apellidoMaterno}`.trim(),
+          fechaNacimiento: alumnoSige.fechaNacimiento, // Nota: En SIGE es String
+          establecimientoNombre: alumnoSige.sede?.nombre || null 
+        }
+      };
+    }
+
+    return { encontrado: false };
+  }
+
+  @Get('verificar-apoderado/:rut')
+  async verificarApoderado(@Param('rut') rut: string) {
+    const rutLimpio = rut.trim().toUpperCase().replace(/[^0-9K]/g, '');
+    const rutConGuion = rutLimpio.length > 1 ? rutLimpio.slice(0, -1) + '-' + rutLimpio.slice(-1) : rutLimpio;
+
+    const apoderado = await this.prisma.apoderado.findFirst({
+      where: { 
+        OR: [
+          { rut: rutLimpio },
+          { rut: rutConGuion }
+        ]
+      }
+    });
+
+    if (apoderado) {
+      return {
+        encontrado: true,
+        datos: {
+          nombre: apoderado.nombre,
+          email: apoderado.email,
+          telefono: apoderado.telefono
+        }
+      };
+    }
+
+    return { encontrado: false };
+  }
+
 
   @Post('nueva')
   async inscribir(@Body() dto: CreateInscripcioneDto) {
+    // Normalizar RUTs (sin puntos ni guion)
+    const rutAlumno = dto.rut.trim().toUpperCase().replace(/[^0-9K]/g, '');
+    const rutApoderado = dto.rutApoderado.trim().toUpperCase().replace(/[^0-9K]/g, '');
+
     // 1. Validar duplicidad en el taller
     const existe = await this.prisma.inscripcion.findFirst({
       where: {
         tallerId: dto.tallerId,
-        alumno: { rut: dto.rut }
+        alumno: { rut: rutAlumno }
       }
     });
 
@@ -56,19 +160,19 @@ export class InscripcionesController {
 
       // B. Buscar o Crear Apoderado
       let apoderado = await tx.apoderado.findUnique({ 
-        where: { rut: dto.rutApoderado } 
+        where: { rut: rutApoderado } 
       });
 
       if (!apoderado) {
         // Crear nuevo apoderado con su RUT hasheado como contraseña
-        const hashedPassword = await bcrypt.hash(dto.rutApoderado, 10);
+        const hashedPassword = await bcrypt.hash(rutApoderado, 10);
         
         apoderado = await tx.apoderado.create({
           data: {
-            rut: dto.rutApoderado,
+            rut: rutApoderado,
             nombre: dto.nombreApoderado,
             telefono: dto.telefonoApoderado || dto.telefono || 'N/A',
-            email: dto.emailApoderado,
+            email: dto.emailApoderado.toLowerCase(),
             password: hashedPassword
           }
         });
@@ -98,12 +202,12 @@ export class InscripcionesController {
       }
 
       // B.2 Buscar o Crear Alumno
-      let alumno = await tx.alumno.findUnique({ where: { rut: dto.rut } });
+      let alumno = await tx.alumno.findUnique({ where: { rut: rutAlumno } });
 
       if (!alumno) {
         alumno = await tx.alumno.create({
           data: {
-            rut: dto.rut,
+            rut: rutAlumno,
             nombres: dto.nombres,
             apellidos: dto.apellidos,
             fechaNacimiento: new Date(dto.fechaNacimiento),
@@ -137,16 +241,28 @@ export class InscripcionesController {
         throw new BadRequestException('No quedan cupos disponibles en este taller.');
       }
 
-      // D. Crear la Inscripción
+      // D. Crear la Inscripción con Ficha Médica y Consentimiento
       const nuevaInscripcion = await tx.inscripcion.create({
         data: {
           tallerId: dto.tallerId,
           alumnoId: alumno.id,
+          parentesco: (dto.parentesco?.toLowerCase() === 'otro' && dto.parentescoOtro) 
+            ? dto.parentescoOtro 
+            : dto.parentesco,
+          // Nuevos campos de salud
+          enfermedadCronica: dto.enfermedadCronica ?? false,
+          enfermedadCronicaDetalle: dto.enfermedadCronicaDetalle || null,
+          tratamientoMedico: dto.tratamientoMedico || null,
+          alergias: dto.alergias || null,
+          necesidadesEspeciales: dto.necesidadesEspeciales ?? false,
+          necesidadesEspecialesDetalle: dto.necesidadesEspecialesDetalle || null,
+          apoyoEscolar: dto.apoyoEscolar || null,
+          usoImagen: dto.usoImagen ?? false,
         }
       });
 
       return { 
-        message: `Inscripción exitosa. El apoderado puede iniciar sesión con: Email: ${apoderado.email} y Contraseña: ${dto.rutApoderado}`,
+        message: `Inscripción exitosa. El apoderado puede iniciar sesión con: Email: ${apoderado.email} y Contraseña: ${rutApoderado}`,
         inscripcionId: nuevaInscripcion.id,
         apoderado: {
           email: apoderado.email,

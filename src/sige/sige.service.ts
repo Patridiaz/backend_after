@@ -20,10 +20,6 @@ export class SigeService {
       // Obtenemos el RUNC (ID único)
       const runcRaw = row['RUNC'] || row['RUNC(CONCATENADO EL RUT MAS DV)'];
       let runc = runcRaw ? runcRaw.toString().trim().toUpperCase().replace(/[^0-9K]/g, '') : null;
-      if (runc && runc.length > 1) {
-        // Insertar guión antes del último dígito: xxxxxxxx-x
-        runc = runc.slice(0, -1) + '-' + runc.slice(-1);
-      }
       
       let anioFromRow = row['Año'] || row['Anio'] || row['AÑO'] || new Date().getFullYear();
       let anio = parseInt(anioFromRow.toString(), 10);
@@ -245,21 +241,16 @@ export class SigeService {
   async verificarRut(rut: string) {
     if (!rut || rut.trim() === '') return { found: false };
 
-    // Limpiamos los símbolos del input para tener el "esqueleto" numérico
+    // Limpiamos los símbolos del input para tener el "esqueleto" numérico (sin puntos ni guion)
     const cleanInput = rut.trim().toUpperCase().replace(/[^0-9K]/g, '');
     if (cleanInput.length < 2) return { found: false };
 
-    // Creamos la versión con guión (estándar Lirmi)
-    const hyphenated = cleanInput.slice(0, -1) + '-' + cleanInput.slice(-1);
-    
-    // Buscamos de forma muy permisiva (Exacta, con guion, sin guion, o parcial)
+    // Buscamos de forma muy permisiva (Exacta o parcial)
     const sigeData = await this.prisma.alumnoSige.findFirst({
       where: {
         OR: [
-          { runc: cleanInput },     // Ej: 12345678K
-          { runc: hyphenated },     // Ej: 12345678-K
-          { runc: { contains: cleanInput } },      // Captura formatos con puntos
-          { runc: { contains: hyphenated } }       // Captura cualquier variante
+          { runc: cleanInput },
+          { runc: { contains: cleanInput } }
         ]
       },
       include: {
@@ -277,7 +268,6 @@ export class SigeService {
           where: {
             OR: [
               { runc: cleanNoZeros },
-              { runc: hyphenatedNoZeros },
               { runc: { contains: cleanNoZeros } }
             ]
           },
@@ -316,11 +306,8 @@ export class SigeService {
     let fechasCorregidas = 0;
 
     for (const alumno of todos) {
-      // 1. Corregir RUT (con guión)
+      // 1. Corregir RUT (sin puntos ni guion)
       let cleanRunc = alumno.runc.toUpperCase().trim().replace(/[^0-9K]/g, '');
-      if (cleanRunc.length > 1) {
-        cleanRunc = cleanRunc.slice(0, -1) + '-' + cleanRunc.slice(-1);
-      }
 
       // 2. Corregir Fechas
       const nuevaFechaNac = this.formatExcelDate(alumno.fechaNacimiento);

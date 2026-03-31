@@ -28,9 +28,11 @@ export class AsistenciaService {
     });
   }
 
-  async registrarAsistenciaMensual(dto: TomarAsistenciaMensualDto) {
+  async registrarAsistenciaMensual(dto: TomarAsistenciaMensualDto, usuarioId?: number) {
     return await this.prisma.$transaction(async (tx) => {
       const resultados: any[] = [];
+      const autorId = usuarioId || dto.profesorId; // Prioridad al usuario logueado
+
       for (const item of dto.cambios) {
         const fechaDate = new Date(item.fecha);
         // Ajustamos la fecha para que sea a medianoche (Date Only)
@@ -46,14 +48,14 @@ export class AsistenciaService {
           },
           update: {
             estado: item.estado,
-            registradoPor: dto.profesorId
+            registradoPor: autorId
           },
           create: {
             tallerId: dto.tallerId,
             alumnoId: item.alumnoId,
             fecha: fechaDate,
             estado: item.estado,
-            registradoPor: dto.profesorId
+            registradoPor: autorId
           }
         });
         resultados.push(registro);
@@ -77,9 +79,10 @@ export class AsistenciaService {
   }
 
   // Guardar o Actualizar Asistencia Masiva
-  async registrarAsistencia(dto: TomarAsistenciaDto) {
+  async registrarAsistencia(dto: TomarAsistenciaDto, usuarioId?: number) {
     const fechaDate = new Date(dto.fecha);
     fechaDate.setHours(0, 0, 0, 0);
+    const autorId = usuarioId || dto.profesorId;
 
     return await this.prisma.$transaction(async (tx) => {
       const resultados: any[] = [];
@@ -95,14 +98,14 @@ export class AsistenciaService {
           },
           update: {
             estado: item.estado,
-            registradoPor: dto.profesorId
+            registradoPor: autorId
           },
           create: {
             tallerId: dto.tallerId,
             alumnoId: item.alumnoId,
             fecha: fechaDate,
             estado: item.estado,
-            registradoPor: dto.profesorId
+            registradoPor: autorId
           }
         });
         resultados.push(registro);
@@ -110,4 +113,4 @@ export class AsistenciaService {
       return resultados;
     });
   }
-}
+}
