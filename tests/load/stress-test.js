@@ -15,7 +15,7 @@ export const options = {
 };
 
 // --- DATOS DE PRUEBA ---
-const BASE_URL = 'http://127.0.0.1:3005/api'; // Puerto correcto de main.ts y prefijo global
+const BASE_URL = 'https://after.eduhuechuraba.cl/api'; // URL de tu VPS
 
 export default function () {
   const randomRut = Math.floor(Math.random() * 9000000) + 10000000;
