@@ -4,6 +4,7 @@ import { differenceInYears } from 'date-fns';
 import { CreateSedeDto } from './dto/create-sede.dto';
 import { CreateTallerDto } from './dto/create-taller.dto';
 import { UpdateTallerDto } from './dto/update-taller.dto';
+import { UpdateSedeDto } from './dto/update-sede.dto';
 import { AssignProfesorDto } from './dto/assign-profesor.dto';
 import { FilterTallerDto } from './dto/filter-taller.dto';
 
@@ -62,6 +63,21 @@ export class TalleresService {
     return this.prisma.sede.create({
       data: dto
     });
+  }
+
+  async updateSede(id: number, dto: UpdateSedeDto) {
+    return this.prisma.sede.update({
+      where: { id },
+      data: dto
+    });
+  }
+
+  async deleteSede(id: number) {
+    const talleres = await this.prisma.taller.count({ where: { sedeId: id } });
+    if (talleres > 0) {
+      throw new ConflictException('No se puede eliminar una sede que ya tiene talleres registrados en el sistema.');
+    }
+    return this.prisma.sede.delete({ where: { id } });
   }
 
   async createTaller(dto: CreateTallerDto) {

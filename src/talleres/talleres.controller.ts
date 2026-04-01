@@ -2,6 +2,7 @@ import { Controller, Get, Param, Query, Req, UseGuards, Post, Body, Unauthorized
 import { TalleresService } from './talleres.service';
 import { FilterTallerDto } from './dto/filter-taller.dto';
 import { CreateSedeDto } from './dto/create-sede.dto';
+import { UpdateSedeDto } from './dto/update-sede.dto';
 import { CreateTallerDto } from './dto/create-taller.dto';
 import { UpdateTallerDto } from './dto/update-taller.dto';
 import { AssignProfesorDto } from './dto/assign-profesor.dto';
@@ -32,6 +33,20 @@ export class TalleresController {
   async createSede(@Body() dto: CreateSedeDto, @Req() req: any) {
     this.checkAdmin(req.user);
     return this.talleresService.createSede(dto);
+  }
+
+  @Patch('sede/:id')
+  @UseGuards(AuthGuard('jwt'))
+  async updateSede(@Param('id') id: string, @Body() dto: UpdateSedeDto, @Req() req: any) {
+    this.checkAdmin(req.user);
+    return this.talleresService.updateSede(+id, dto);
+  }
+
+  @Delete('sede/:id')
+  @UseGuards(AuthGuard('jwt'))
+  async deleteSede(@Param('id') id: string, @Req() req: any) {
+    this.checkAdmin(req.user);
+    return this.talleresService.deleteSede(+id);
   }
 
   @Post('nuevo')
