@@ -34,6 +34,7 @@ model Taller {
 
   profesores  ProfesorTaller[]
   asistencias Asistencia[]
+  listaEspera ListaEspera[] @relation("TallerEnEspera")
 }
 
 model HorarioTaller {
@@ -96,6 +97,7 @@ model Alumno {
   inscripciones Inscripcion[]
   createdAt     DateTime      @default(now())
   asistencias   Asistencia[]
+  listaEspera   ListaEspera[] @relation("AlumnoEnEspera")
 }
 
 model Inscripcion {
@@ -221,4 +223,16 @@ model AlumnoSige {
 
   // Limitamos para no crear alumnos duplicados por año en la misma sede
   @@unique([runc, anio, sedeId])
+}
+
+model ListaEspera {
+  id        Int      @id @default(autoincrement())
+  alumnoId  Int
+  tallerId  Int
+  fecha     DateTime @default(now())
+  
+  alumno    Alumno   @relation("AlumnoEnEspera", fields: [alumnoId], references: [id])
+  taller    Taller   @relation("TallerEnEspera", fields: [tallerId], references: [id])
+
+  @@unique([alumnoId, tallerId])
 }

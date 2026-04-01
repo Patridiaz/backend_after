@@ -191,9 +191,7 @@ export class TalleresService {
   async findAvailable(params: FilterTallerDto) {
     const { sedeId, fechaNacimiento, search, minAge, maxAge } = params;
 
-    const where: any = {
-      cuposDisponibles: { gt: 0 },
-    };
+    const where: any = {};
 
     // Filtro por Sede (SedeOpcional)
     if (sedeId) {

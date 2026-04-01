@@ -20,4 +20,8 @@ export class FilterTallerDto {
   @IsNumberString()
   @IsOptional()
   maxAge?: string;
+
+  @IsString()
+  @IsOptional()
+  includeFull?: string;
 }

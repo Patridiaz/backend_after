@@ -1,4 +1,5 @@
-import { Controller, Post, Body, BadRequestException, Get, Param } from '@nestjs/common';
+import { Controller, Post, Body, BadRequestException, Get, Param, Res, HttpStatus } from '@nestjs/common';
+import type { Response } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateInscripcioneDto } from './dto/create-inscripcione.dto';
 import * as bcrypt from 'bcrypt';
@@ -127,7 +128,7 @@ export class InscripcionesController {
 
 
   @Post('nueva')
-  async inscribir(@Body() dto: CreateInscripcioneDto) {
+  async inscribir(@Body() dto: CreateInscripcioneDto, @Res({ passthrough: true }) response: Response) {
     // Normalizar RUTs (sin puntos ni guion)
     const rutAlumno = dto.rut.trim().toUpperCase().replace(/[^0-9K]/g, '');
     const rutApoderado = dto.rutApoderado.trim().toUpperCase().replace(/[^0-9K]/g, '');
@@ -164,18 +165,35 @@ export class InscripcionesController {
       });
 
       if (!apoderado) {
-        // Crear nuevo apoderado con su RUT hasheado como contraseña
+        // Primero verificamos si el email ya está en uso por otro apoderado (para dar un error claro)
+        const emailEnUso = await tx.apoderado.findUnique({
+          where: { email: dto.emailApoderado.toLowerCase() }
+        });
+
+        if (emailEnUso) {
+          throw new BadRequestException(
+            `El correo ${dto.emailApoderado} ya está registrado con otro RUT. Por favor, use el mismo RUT asociado a ese correo o un email diferente.`
+          );
+        }
+
         const hashedPassword = await bcrypt.hash(rutApoderado, 10);
         
-        apoderado = await tx.apoderado.create({
-          data: {
-            rut: rutApoderado,
-            nombre: dto.nombreApoderado,
-            telefono: dto.telefonoApoderado || dto.telefono || 'N/A',
-            email: dto.emailApoderado.toLowerCase(),
-            password: hashedPassword
+        try {
+          apoderado = await tx.apoderado.create({
+            data: {
+              rut: rutApoderado,
+              nombre: dto.nombreApoderado,
+              telefono: dto.telefonoApoderado || dto.telefono || 'N/A',
+              email: dto.emailApoderado.toLowerCase(),
+              password: hashedPassword
+            }
+          });
+        } catch (error) {
+          if (error.code === 'P2002') {
+            throw new BadRequestException('El RUT o el correo del apoderado ya están registrados en el sistema.');
           }
-        });
+          throw error;
+        }
       }
 
       // B.1 Buscar o Crear Establecimiento (con normalización para evitar duplicados)
@@ -226,7 +244,7 @@ export class InscripcionesController {
         });
       }
 
-      // C. Descontar Cupos
+      // C. Descontar Cupos o Lista de Espera
       try {
         await tx.taller.update({
           where: { 
@@ -237,38 +255,76 @@ export class InscripcionesController {
             cuposDisponibles: { decrement: 1 }
           }
         });
+
+        // D. Crear la Inscripción con Ficha Médica y Consentimiento
+        const nuevaInscripcion = await tx.inscripcion.create({
+          data: {
+            tallerId: dto.tallerId,
+            alumnoId: alumno.id,
+            parentesco: (dto.parentesco?.toLowerCase() === 'otro' && dto.parentescoOtro) 
+              ? dto.parentescoOtro 
+              : dto.parentesco,
+            enfermedadCronica: dto.enfermedadCronica ?? false,
+            enfermedadCronicaDetalle: dto.enfermedadCronicaDetalle || null,
+            tratamientoMedico: dto.tratamientoMedico || null,
+            alergias: dto.alergias || null,
+            necesidadesEspeciales: dto.necesidadesEspeciales ?? false,
+            necesidadesEspecialesDetalle: dto.necesidadesEspecialesDetalle || null,
+            apoyoEscolar: dto.apoyoEscolar || null,
+            usoImagen: dto.usoImagen ?? false,
+          }
+        });
+
+        return { 
+          status: 'SUCCESS',
+          message: `Inscripción exitosa. El apoderado puede iniciar sesión con: Email: ${apoderado.email} y Contraseña: ${rutApoderado}`,
+          inscripcionId: nuevaInscripcion.id,
+          apoderado: { email: apoderado.email, nombre: apoderado.nombre }
+        };
+
       } catch (error) {
-        throw new BadRequestException('No quedan cupos disponibles en este taller.');
+        // --- LÓGICA DE LISTA DE ESPERA ---
+        // Si falló el update por cuposDisponibles: { gt: 0 }, venimos aquí.
+        // Pero primero verificamos si no fue un error real de DB.
+        const tallerCheck = await tx.taller.findUnique({ where: { id: dto.tallerId } });
+        if (tallerCheck && tallerCheck.cuposDisponibles > 0) {
+          // Si hay cupos pero falló, fue otro error (ej: el taller desapareció en milisegundos)
+          throw error; 
+        }
+
+        // 1. Verificamos si ya está inscrito (para no duplicar en espera)
+        const yaInscrito = await tx.inscripcion.findFirst({
+          where: { alumnoId: alumno.id, tallerId: dto.tallerId }
+        });
+        if (yaInscrito) throw new BadRequestException('El alumno ya se encuentra inscrito en este taller.');
+
+        // 2. Verificamos si ya está en lista de espera
+        const yaEnEspera = await tx.listaEspera.findFirst({
+          where: { alumnoId: alumno.id, tallerId: dto.tallerId }
+        });
+        if (yaEnEspera) throw new BadRequestException('El alumno ya se encuentra en la lista de espera de este taller.');
+
+        // 3. Crear registro en Lista de Espera
+        await tx.listaEspera.create({
+          data: {
+            alumnoId: alumno.id,
+            tallerId: dto.tallerId
+          }
+        });
+
+        // 4. Calcular posición (contar cuántos hay antes o en total en ese taller)
+        const posicion = await tx.listaEspera.count({
+          where: { tallerId: dto.tallerId }
+        });
+
+        response.status(HttpStatus.ACCEPTED); // Status 202
+        return {
+          status: 'WAIT_LIST',
+          posicion,
+          message: `Taller lleno. El alumno ha quedado en la posición ${posicion} de la lista de espera.`,
+          apoderado: { email: apoderado.email, nombre: apoderado.nombre }
+        };
       }
-
-      // D. Crear la Inscripción con Ficha Médica y Consentimiento
-      const nuevaInscripcion = await tx.inscripcion.create({
-        data: {
-          tallerId: dto.tallerId,
-          alumnoId: alumno.id,
-          parentesco: (dto.parentesco?.toLowerCase() === 'otro' && dto.parentescoOtro) 
-            ? dto.parentescoOtro 
-            : dto.parentesco,
-          // Nuevos campos de salud
-          enfermedadCronica: dto.enfermedadCronica ?? false,
-          enfermedadCronicaDetalle: dto.enfermedadCronicaDetalle || null,
-          tratamientoMedico: dto.tratamientoMedico || null,
-          alergias: dto.alergias || null,
-          necesidadesEspeciales: dto.necesidadesEspeciales ?? false,
-          necesidadesEspecialesDetalle: dto.necesidadesEspecialesDetalle || null,
-          apoyoEscolar: dto.apoyoEscolar || null,
-          usoImagen: dto.usoImagen ?? false,
-        }
-      });
-
-      return { 
-        message: `Inscripción exitosa. El apoderado puede iniciar sesión con: Email: ${apoderado.email} y Contraseña: ${rutApoderado}`,
-        inscripcionId: nuevaInscripcion.id,
-        apoderado: {
-          email: apoderado.email,
-          nombre: apoderado.nombre
-        }
-      };
     });
   }
 }
