@@ -11,6 +11,9 @@ async function bootstrap() {
       'http://localhost:4200',
       'https://after.eduhuechuraba.cl',
       'https://www.after.eduhuechuraba.cl',
+      'http://after.eduhuechuraba.cl',
+      'http://www.after.eduhuechuraba.cl',
+
     ],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
