@@ -3,6 +3,7 @@ import { check, sleep } from 'k6';
 
 // --- CONFIGURACIÓN DEL ESCENARIO ---
 export const options = {
+  insecureSkipTLSVerify: true, // Ignorar errores de certificado SSL para el test
   stages: [
     { duration: '30s', target: 50 }, // Escalar a 50 usuarios concurrentes
     { duration: '1m', target: 50 },  // Mantener 50 usuarios
@@ -15,7 +16,7 @@ export const options = {
 };
 
 // --- DATOS DE PRUEBA ---
-const BASE_URL = 'https://after.eduhuechuraba.cl/api'; // URL de tu VPS
+const BASE_URL = 'https://api.after.eduhuechuraba.cl/api'; // URL de tu VPS
 
 export default function () {
   const randomRut = Math.floor(Math.random() * 9000000) + 10000000;
