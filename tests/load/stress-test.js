@@ -5,8 +5,8 @@ import { check, sleep } from 'k6';
 export const options = {
   insecureSkipTLSVerify: true, 
   stages: [
-    { duration: '10s', target: 100 }, // Subida suave a 100 personas
-    { duration: '20s', target: 100 }, 
+    { duration: '10s', target: 300 }, // Subida suave a 100 personas
+    { duration: '20s', target: 300 }, 
     { duration: '10s', target: 0 },   
   ],
   thresholds: {
