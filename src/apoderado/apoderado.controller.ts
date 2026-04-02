@@ -1,4 +1,4 @@
-import { Controller, Get, Req, UseGuards, UnauthorizedException } from '@nestjs/common';
+import { Controller, Get, Req, UseGuards, UnauthorizedException, Query } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { PrismaService } from 'src/prisma/prisma.service';
 
@@ -11,8 +11,8 @@ export class ApoderadoController {
   async getMisPupilos(@Req() req: any) {
     const user = req.user;
 
-    if (user.tipo !== 'APODERADO') {
-       throw new UnauthorizedException('Acceso solo para apoderados.');
+    if (user.tipo !== 'APODERADO' && user.tipo !== 'ADMIN') {
+       throw new UnauthorizedException('Acceso restringido.');
     }
 
     // Traemos el apoderado con sus alumnos
@@ -39,7 +39,7 @@ export class ApoderadoController {
   @UseGuards(AuthGuard('jwt'))
   async getTalleresPupilos(@Req() req: any) {
     const user = req.user;
-    if (user.tipo !== 'APODERADO') throw new UnauthorizedException();
+    if (user.tipo !== 'APODERADO' && user.tipo !== 'ADMIN') throw new UnauthorizedException();
 
     const apoderado = await this.prisma.apoderado.findUnique({
       where: { id: user.userId },
@@ -79,12 +79,19 @@ export class ApoderadoController {
 
   @Get('dashboard')
   @UseGuards(AuthGuard('jwt'))
-  async getDashboard(@Req() req: any) {
+  async getDashboard(@Req() req: any, @Query('apoderadoId') apoderadoId?: string) {
     const user = req.user;
-    if (user.tipo !== 'APODERADO') throw new UnauthorizedException('Acceso solo para apoderados.');
+    
+    // Permitir acceso a APODERADO y ADMIN
+    if (user.tipo !== 'APODERADO' && user.tipo !== 'ADMIN') {
+      throw new UnauthorizedException('Acceso restringido.');
+    }
+
+    // Si es ADMIN y envía id, lo usamos. Si no, usamos el ID del usuario logueado.
+    const targetId = (user.tipo === 'ADMIN' && apoderadoId) ? parseInt(apoderadoId) : user.userId;
 
     const apoderadoData = await this.prisma.apoderado.findUnique({
-      where: { id: user.userId },
+      where: { id: targetId },
       include: {
         alumnos: {
           include: {
