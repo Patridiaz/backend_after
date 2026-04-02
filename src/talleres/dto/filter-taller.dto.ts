@@ -24,4 +24,12 @@ export class FilterTallerDto {
   @IsString()
   @IsOptional()
   includeFull?: string;
+
+  @IsNumberString()
+  @IsOptional()
+  page?: string;
+
+  @IsNumberString()
+  @IsOptional()
+  limit?: string;
 }

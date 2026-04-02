@@ -1,4 +1,6 @@
-import { Controller, Post, Body, BadRequestException, Get, Param, Res, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Body, BadRequestException, Get, Param, Res, HttpStatus, Inject } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import type { Cache } from 'cache-manager';
 import type { Response } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateInscripcioneDto } from './dto/create-inscripcione.dto';
@@ -7,7 +9,10 @@ import { differenceInYears } from 'date-fns';
 
 @Controller('inscripciones')
 export class InscripcionesController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(CACHE_MANAGER) private cacheManager: Cache
+  ) {}
 
   @Get('establecimientos')
   async getEstablecimientos() {
@@ -274,6 +279,19 @@ export class InscripcionesController {
             usoImagen: dto.usoImagen ?? false,
           }
         });
+
+        // Invalida Caché de Talleres (puesto que han cambiado los cupos)
+        try {
+          const store: any = (this.cacheManager as any).store;
+          if (store.keys) {
+            const keys = await store.keys('talleres_disponibles_*');
+            for (const key of keys) {
+              await this.cacheManager.del(key);
+            }
+          }
+        } catch (e) {
+          console.error("Error invalidando caché tras inscripción:", e);
+        }
 
         return { 
           status: 'SUCCESS',

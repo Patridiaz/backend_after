@@ -1,4 +1,6 @@
-import { Injectable, ConflictException, NotFoundException } from '@nestjs/common';
+import { Injectable, ConflictException, NotFoundException, Inject } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import type { Cache } from 'cache-manager';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { differenceInYears } from 'date-fns';
 import { CreateSedeDto } from './dto/create-sede.dto';
@@ -16,7 +18,13 @@ const DIAS_LECTIVOS = [1, 2, 3, 4, 5]; // Lunes a Viernes (0=Domingo, 6=Sábado)
 
 @Injectable()
 export class TalleresService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    @Inject(CACHE_MANAGER) private cacheManager: Cache
+  ) {}
+
+  // Prefijo para claves de talleres disponibles
+  private CACHE_PREFIX = 'talleres_disponibles_';
 
   // --- ADMINISTRACIÓN ---
 
@@ -43,10 +51,12 @@ export class TalleresService {
       };
     }
 
-    return this.prisma.taller.update({
+    const updated = await this.prisma.taller.update({
       where: { id },
       data: dataUpdate
     });
+    await this.clearCache();
+    return updated;
   }
 
   async deleteTaller(id: number) {
@@ -56,20 +66,26 @@ export class TalleresService {
       throw new ConflictException('No se puede eliminar un taller que ya tiene alumnos inscritos.');
     }
 
-    return this.prisma.taller.delete({ where: { id } });
+    const deleted = await this.prisma.taller.delete({ where: { id } });
+    await this.clearCache();
+    return deleted;
   }
 
   async createSede(dto: CreateSedeDto) {
-    return this.prisma.sede.create({
+    const result = await this.prisma.sede.create({
       data: dto
     });
+    await this.clearCache();
+    return result;
   }
 
   async updateSede(id: number, dto: UpdateSedeDto) {
-    return this.prisma.sede.update({
+    const result = await this.prisma.sede.update({
       where: { id },
       data: dto
     });
+    await this.clearCache();
+    return result;
   }
 
   async deleteSede(id: number) {
@@ -77,12 +93,14 @@ export class TalleresService {
     if (talleres > 0) {
       throw new ConflictException('No se puede eliminar una sede que ya tiene talleres registrados en el sistema.');
     }
-    return this.prisma.sede.delete({ where: { id } });
+    const result = await this.prisma.sede.delete({ where: { id } });
+    await this.clearCache();
+    return result;
   }
 
   async createTaller(dto: CreateTallerDto) {
     const { sedeId, horarios, ...tallerData } = dto;
-    return this.prisma.taller.create({
+    const nuevo = await this.prisma.taller.create({
       data: {
         ...tallerData,
         cuposDisponibles: dto.cuposTotales, // Al inicio, disponibles = totales
@@ -92,6 +110,9 @@ export class TalleresService {
         }
       }
     });
+
+    await this.clearCache();
+    return nuevo;
   }
 
   async assignProfesor(dto: AssignProfesorDto) {
@@ -189,23 +210,31 @@ export class TalleresService {
   }
 
   async findAvailable(params: FilterTallerDto) {
-    const { sedeId, fechaNacimiento, search, minAge, maxAge } = params;
+    // 0. Intentar recuperar desde Caché
+    const cacheKey = `${this.CACHE_PREFIX}${JSON.stringify(params)}`;
+    const cachedData = await this.cacheManager.get(cacheKey);
+    if (cachedData) return cachedData;
+
+    const { sedeId, fechaNacimiento, search, minAge, maxAge, includeFull, page, limit } = params;
 
     const where: any = {};
 
-    // Filtro por Sede (SedeOpcional)
+    // 1. Filtro por Cupos (Si includeFull es false o no viene, solo mostramos los que tienen cupo)
+    if (includeFull !== 'true') {
+      where.cuposDisponibles = { gt: 0 };
+    }
+
+    // 2. Filtro por Sede
     if (sedeId) {
       where.sedeId = parseInt(sedeId);
     }
 
-    // Filtro por Búsqueda de Texto (Search)
+    // 3. Filtro por Búsqueda de Texto
     if (search) {
-      where.nombre = {
-        contains: search
-      };
+      where.nombre = { contains: search };
     }
 
-    // Filtro por Fecha de Nacimiento (Edad Exacta)
+    // 4. Filtro por Edad (Fecha de Nacimiento o Rangos)
     if (fechaNacimiento) {
       const fechaNac = new Date(fechaNacimiento);
       const edad = differenceInYears(new Date(), fechaNac);
@@ -229,14 +258,47 @@ export class TalleresService {
       ];
     }
 
-    return this.prisma.taller.findMany({
+    // 5. Paginación (Default: Página 1, Límite 12)
+    const p = page ? parseInt(page) : 1;
+    const l = limit ? parseInt(limit) : 12;
+    const skip = (p - 1) * l;
+
+    // 6. Consulta Final
+    const talleres = await this.prisma.taller.findMany({
       where: where,
+      skip,
+      take: l,
       include: {
         sede: true, // Respuesta incluye el objeto Sede completo
         horarios: true
       },
       orderBy: { nombre: 'asc' }
     });
+
+    // 7. Guardar en Caché (2 minutos)
+    await this.cacheManager.set(cacheKey, talleres, 120000);
+
+    return talleres;
+  }
+
+  /**
+   * Limpia toda la caché de talleres disponibles (Invalida)
+   */
+  async clearCache() {
+    try {
+      const store: any = (this.cacheManager as any).store;
+      if (store.keys) {
+        const keys = await store.keys(`${this.CACHE_PREFIX}*`);
+        for (const key of keys) {
+          await this.cacheManager.del(key);
+        }
+      } else {
+        // Fallback para otros stores si keys() no existe
+        await (this.cacheManager as any).reset();
+      }
+    } catch (e) {
+      console.error("Error clearing Redis cache:", e);
+    }
   }
 
   /**

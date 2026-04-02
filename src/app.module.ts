@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { CacheModule } from '@nestjs/cache-manager';
+import * as redisStore from 'cache-manager-redis-yet';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaService } from './prisma/prisma.service';
@@ -12,6 +14,10 @@ import { UsuariosModule } from './usuarios/usuarios.module';
 
 @Module({
   imports: [
+    CacheModule.register({ 
+      isGlobal: true,
+      ttl: 60000, // 1 minuto por defecto
+    }),
     TalleresModule, 
     InscripcionesModule, 
     AsistenciaModule, 
