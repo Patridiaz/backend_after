@@ -6,18 +6,25 @@ import { PrismaService } from 'src/prisma/prisma.service';
 export class ApoderadoController {
   constructor(private readonly prisma: PrismaService) {}
 
+  // Roles permitidos para ver información de apoderados (Gestión Interna)
+  private readonly rolesGestion = ['APODERADO', 'ADMIN', 'PROFESOR', 'ENCARGADO_ESCUELA', 'COORDINADOR'];
+
+  private checkAccess(user: any) {
+    if (!this.rolesGestion.includes(user.tipo)) {
+      throw new UnauthorizedException('Acceso restringido.');
+    }
+  }
+
   @Get('mis-pupilos')
   @UseGuards(AuthGuard('jwt'))
-  async getMisPupilos(@Req() req: any) {
+  async getMisPupilos(@Req() req: any, @Query('apoderadoId') apoderadoId?: string) {
     const user = req.user;
+    this.checkAccess(user);
 
-    if (user.tipo !== 'APODERADO' && user.tipo !== 'ADMIN') {
-       throw new UnauthorizedException('Acceso restringido.');
-    }
+    const targetId = (user.tipo !== 'APODERADO' && apoderadoId) ? parseInt(apoderadoId) : user.userId;
 
-    // Traemos el apoderado con sus alumnos
     const apoderado = await this.prisma.apoderado.findUnique({
-      where: { id: user.userId },
+      where: { id: targetId },
       include: {
         alumnos: {
           select: {
@@ -37,12 +44,14 @@ export class ApoderadoController {
 
   @Get('talleres')
   @UseGuards(AuthGuard('jwt'))
-  async getTalleresPupilos(@Req() req: any) {
+  async getTalleresPupilos(@Req() req: any, @Query('apoderadoId') apoderadoId?: string) {
     const user = req.user;
-    if (user.tipo !== 'APODERADO' && user.tipo !== 'ADMIN') throw new UnauthorizedException();
+    this.checkAccess(user);
+
+    const targetId = (user.tipo !== 'APODERADO' && apoderadoId) ? parseInt(apoderadoId) : user.userId;
 
     const apoderado = await this.prisma.apoderado.findUnique({
-      where: { id: user.userId },
+      where: { id: targetId },
       include: {
         alumnos: {
           include: {
@@ -58,9 +67,7 @@ export class ApoderadoController {
       }
     });
 
-    if (!apoderado) {
-      return [];
-    }
+    if (!apoderado) return [];
 
     return apoderado.alumnos.map(alumno => ({
       alumno: {
@@ -79,16 +86,28 @@ export class ApoderadoController {
 
   @Get('dashboard')
   @UseGuards(AuthGuard('jwt'))
-  async getDashboard(@Req() req: any, @Query('apoderadoId') apoderadoId?: string) {
+  async getDashboard(@Req() req: any, @Query('apoderadoId') apoderadoId?: string, @Query('rut') rut?: string) {
     const user = req.user;
-    
-    // Permitir acceso a APODERADO y ADMIN
-    if (user.tipo !== 'APODERADO' && user.tipo !== 'ADMIN') {
-      throw new UnauthorizedException('Acceso restringido.');
-    }
+    this.checkAccess(user);
 
-    // Si es ADMIN y envía id, lo usamos. Si no, usamos el ID del usuario logueado.
-    const targetId = (user.tipo === 'ADMIN' && apoderadoId) ? parseInt(apoderadoId) : user.userId;
+    let targetId = user.userId;
+
+    if (user.tipo !== 'APODERADO') {
+      if (apoderadoId) {
+        targetId = parseInt(apoderadoId);
+      } else if (rut) {
+        const rutLimpio = rut.trim().toUpperCase().replace(/[^0-9K]/g, '');
+        const apoderadoByRut = await this.prisma.apoderado.findUnique({ where: { rut: rutLimpio } });
+        if (!apoderadoByRut) {
+          const rutConGuion = rutLimpio.length > 1 ? rutLimpio.slice(0, -1) + '-' + rutLimpio.slice(-1) : rutLimpio;
+          const apoderadoGuion = await this.prisma.apoderado.findUnique({ where: { rut: rutConGuion } });
+          if (!apoderadoGuion) throw new UnauthorizedException('Apoderado no encontrado por RUT.');
+          targetId = apoderadoGuion.id;
+        } else {
+          targetId = apoderadoByRut.id;
+        }
+      }
+    }
 
     const apoderadoData = await this.prisma.apoderado.findUnique({
       where: { id: targetId },
@@ -96,7 +115,7 @@ export class ApoderadoController {
         alumnos: {
           include: {
             establecimiento: true,
-            apoderado: true, // Información del apoderado vinculada al alumno
+            apoderado: true,
             inscripciones: {
               include: { 
                 taller: {
@@ -128,7 +147,6 @@ export class ApoderadoController {
       const totalClases = alumno._count.asistencias;
       const porcentajeAsistencia = totalClases > 0 ? Math.round((presentes / totalClases) * 100) : 0;
       
-      // Datos de la inscripción de Marzo 2026
       const insc = alumno.inscripciones[0] || {};
 
       return {
@@ -139,29 +157,20 @@ export class ApoderadoController {
         fechaNacimiento: alumno.fechaNacimiento,
         curso: alumno.curso || "",
         establecimientoNombre: alumno.establecimiento?.nombre || "",
-        
-        // --- 🩺 Ficha de Salud 2026 ---
         enfermedadCronica: insc.enfermedadCronica || false,
         enfermedadCronicaDetalle: insc.enfermedadCronicaDetalle || "",
         tratamientoMedico: insc.tratamientoMedico || "",
         alergias: insc.alergias || "",
         necesidadesEspeciales: insc.necesidadesEspeciales || false,
         necesidadesEspecialesDetalle: insc.necesidadesEspecialesDetalle || "",
-        
-        // --- 📘 Pedagogía ---
         apoyoEscolar: insc.apoyoEscolar || "",
-
-        // --- 📸 Consentimiento ---
         usoImagen: insc.usoImagen || false,
-
-        // --- 👤 Info Apoderado Relacionado ---
         apoderadoRelacionado: {
           nombre: alumno.apoderado.nombre,
           rut: alumno.apoderado.rut,
           email: alumno.apoderado.email,
           telefono: alumno.apoderado.telefono
         },
-
         porcentajeAsistencia,
         talleres: alumno.inscripciones.map(i => ({
           id: i.taller.id,
@@ -195,12 +204,14 @@ export class ApoderadoController {
 
   @Get('asistencia')
   @UseGuards(AuthGuard('jwt'))
-  async getAsistenciaPupilos(@Req() req: any) {
+  async getAsistenciaPupilos(@Req() req: any, @Query('apoderadoId') apoderadoId?: string) {
     const user = req.user;
-    if (user.tipo !== 'APODERADO') throw new UnauthorizedException('Solo apoderados.');
+    this.checkAccess(user);
+
+    const targetId = (user.tipo !== 'APODERADO' && apoderadoId) ? parseInt(apoderadoId) : user.userId;
 
     const apoderado = await this.prisma.apoderado.findUnique({
-      where: { id: user.userId },
+      where: { id: targetId },
       include: {
         alumnos: {
           include: {
@@ -221,12 +232,14 @@ export class ApoderadoController {
 
   @Get('perfil')
   @UseGuards(AuthGuard('jwt'))
-  async getPerfil(@Req() req: any) {
+  async getPerfil(@Req() req: any, @Query('apoderadoId') apoderadoId?: string) {
     const user = req.user;
-    if (user.tipo !== 'APODERADO') throw new UnauthorizedException();
+    this.checkAccess(user);
+
+    const targetId = (user.tipo !== 'APODERADO' && apoderadoId) ? parseInt(apoderadoId) : user.userId;
 
     const apoderado = await this.prisma.apoderado.findUnique({
-      where: { id: user.userId },
+      where: { id: targetId },
       select: {
         id: true,
         rut: true,
@@ -239,6 +252,8 @@ export class ApoderadoController {
         }
       }
     });
+
+    if (!apoderado && user.tipo !== 'APODERADO') throw new UnauthorizedException('Perfil de apoderado no encontrado.');
 
     return apoderado;
   }
