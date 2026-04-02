@@ -1,50 +1,40 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
-// --- CONFIGURACIÓN DEL ESCENARIO ---
+// --- CONFIGURACIÓN DEL ESCENARIO DE ALTO RENDIMIENTO ---
 export const options = {
-  insecureSkipTLSVerify: true, // Ignorar errores de certificado SSL para el test
+  insecureSkipTLSVerify: true, 
   stages: [
-    { duration: '30s', target: 50 }, // Escalar a 50 usuarios concurrentes
-    { duration: '1m', target: 50 },  // Mantener 50 usuarios
-    { duration: '30s', target: 0 },  // Bajar a 0
+    { duration: '15s', target: 300 }, // Escala brutal a 300 usuarios en 15 segundos
+    { duration: '30s', target: 300 }, // Mantiene la presión de 300 personas
+    { duration: '15s', target: 0 },   // Baja a 0
   ],
   thresholds: {
-    http_req_duration: ['p(95)<500'], // El 95% de las peticiones debe tardar menos de 500ms
-    http_req_failed: ['rate<0.01'],   // Menos del 1% de errores permitidos
+    http_req_duration: ['p(95)<800'], // El 95% debe responder en menos de 800ms
+    http_req_failed: ['rate<0.05'],   // Menos del 5% de errores permitidos bajo carga extrema
   },
 };
 
-// --- DATOS DE PRUEBA ---
-const BASE_URL = 'https://api.after.eduhuechuraba.cl/api'; // URL de tu VPS
+const BASE_URL = 'http://localhost:3007/api'; // Usamos localhost para máxima velocidad en el test
 
 export default function () {
-  const randomRut = Math.floor(Math.random() * 9000000) + 10000000;
-  const rutStr = `${randomRut}K`;
+  // Generamos datos aleatorios por cada "persona" en el test
+  const randomId = Math.floor(Math.random() * 900000) + 100000;
+  const rutStr = `22${randomId}K`;
+  const tallerId = Math.floor(Math.random() * 10) + 1; // Repartir entre talleres 1 al 10
 
-  // 1. Simular búsqueda de alumno (LECTURA)
-  const resVerificar = http.get(`${BASE_URL}/inscripciones/verificar-alumno/${rutStr}`);
-  check(resVerificar, {
-    'verificar status es 200': (r) => r.status === 200,
-  });
-
-  sleep(1); // Pausa de 1 segundo entre acciones del "usuario"
-
-  // 2. Simular intento de inscripción (ESCRITURA CON TRANSACCIÓN)
-  // Nota: Esto generará datos reales en tu DB local.
+  // Datos de la inscripción
   const payload = JSON.stringify({
     rut: rutStr,
-    nombres: 'TEST LOAD',
-    apellidos: 'USER K6',
+    nombres: `TestLoadVU ${__VU}`,
+    apellidos: `Iteration ${__ITER}`,
     fechaNacimiento: '2015-05-20',
-    establecimientoNombre: 'SEDE TEST LOAD',
-    telefono: '999999999',
-    rutApoderado: '11111111-1',
-    nombreApoderado: 'APODERADO TEST',
-    telefonoApoderado: '988888888',
-    emailApoderado: `test_${__VU}@example.com`,
-    parentesco: 'Padre',
-    tallerId: 51, // <--- ASEGÚRATE DE QUE ESTE ID EXISTA Y TENGA CUPOS
+    tallerId: tallerId,
+    rutApoderado: `12345${__VU}K`,
+    nombreApoderado: 'Apoderado LoadTest',
+    emailApoderado: `loadtest_${__VU}@afterschool.cl`,
+    telefonoApoderado: '912345678',
+    parentesco: 'PADRE',
     enfermedadCronica: false,
     usoImagen: true
   });
@@ -53,17 +43,20 @@ export default function () {
     headers: { 'Content-Type': 'application/json' },
   };
 
-  const resInscribir = http.post(`${BASE_URL}/inscripciones/nueva`, payload, params);
+  // Acción principal: Intento de Inscripción
+  const res = http.post(`${BASE_URL}/inscripciones/nueva`, payload, params);
   
-  // Imprimir error si falla (muy útil para debuggear carga)
-  if (resInscribir.status !== 201) {
-    console.warn(`❌ Fallo en iteración ${__ITER}: Status ${resInscribir.status} - Body: ${resInscribir.body}`);
+  // Imprimir alerta si hay un error grave (500)
+  if (res.status >= 500) {
+    console.error(`🔴 ERROR CRÍTICO NO SE ESPERABA: Status ${res.status} - Body: ${res.body}`);
   }
 
-  check(resInscribir, {
-    'inscripcion status < 500': (r) => r.status < 500,
-    'inscripcion fue exitosa (201)': (r) => r.status === 201,
+  // Verificamos éxito empresarial (201: Inscrito, 202: Lista de Espera)
+  check(res, {
+    'Status es 201 o 202': (r) => r.status === 201 || r.status === 202,
+    'Tiempo de respuesta < 1s': (r) => r.timings.duration < 1000,
   });
 
-  sleep(2);
+  // El usuario tarda un poco entre leer y decidir (Opcional)
+  sleep(Math.random() * 1 + 1); 
 }
