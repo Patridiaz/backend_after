@@ -181,7 +181,7 @@ export class InscripcionesController {
           );
         }
 
-        const hashedPassword = await bcrypt.hash(rutApoderado, 10);
+        const hashedPassword = await bcrypt.hash(rutApoderado, 5);
         
         try {
           apoderado = await tx.apoderado.create({
