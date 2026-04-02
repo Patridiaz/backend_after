@@ -83,22 +83,25 @@ export class ApoderadoController {
     const user = req.user;
     if (user.tipo !== 'APODERADO') throw new UnauthorizedException('Acceso solo para apoderados.');
 
-    const apoderado = await this.prisma.apoderado.findUnique({
+    const apoderadoData = await this.prisma.apoderado.findUnique({
       where: { id: user.userId },
       include: {
         alumnos: {
           include: {
+            establecimiento: true,
+            apoderado: true, // Información del apoderado vinculada al alumno
             inscripciones: {
               include: { 
                 taller: {
                   include: { sede: true, horarios: true }
                 } 
-              }
+              },
+              orderBy: { fecha: 'desc' }
             },
             asistencias: {
               include: { taller: true },
               orderBy: { fecha: 'desc' },
-              take: 5 // Solo las últimas 5 para el dashboard
+              take: 5
             },
             _count: {
               select: { asistencias: true }
@@ -108,29 +111,50 @@ export class ApoderadoController {
       }
     });
 
-    if (!apoderado) throw new UnauthorizedException('Apoderado no encontrado.');
+    if (!apoderadoData) throw new UnauthorizedException('Apoderado no encontrado.');
 
-    // Calcular estadísticas adicionales para cada alumno
-    const alumnosConEstadisticas = await Promise.all(apoderado.alumnos.map(async (alumno) => {
-      // Obtener conteo de presentes
+    const alumnosConTodo = await Promise.all(apoderadoData.alumnos.map(async (alumno) => {
       const presentes = await this.prisma.asistencia.count({
-        where: {
-          alumnoId: alumno.id,
-          estado: 'P'
-        }
+        where: { alumnoId: alumno.id, estado: 'P' }
       });
 
       const totalClases = alumno._count.asistencias;
-      const porcentajeAsistencia = totalClases > 0 
-        ? Math.round((presentes / totalClases) * 100) 
-        : 0;
+      const porcentajeAsistencia = totalClases > 0 ? Math.round((presentes / totalClases) * 100) : 0;
+      
+      // Datos de la inscripción de Marzo 2026
+      const insc = alumno.inscripciones[0] || {};
 
       return {
         id: alumno.id,
         nombres: alumno.nombres,
         apellidos: alumno.apellidos,
         rut: alumno.rut,
-        curso: alumno.curso,
+        fechaNacimiento: alumno.fechaNacimiento,
+        curso: alumno.curso || "",
+        establecimientoNombre: alumno.establecimiento?.nombre || "",
+        
+        // --- 🩺 Ficha de Salud 2026 ---
+        enfermedadCronica: insc.enfermedadCronica || false,
+        enfermedadCronicaDetalle: insc.enfermedadCronicaDetalle || "",
+        tratamientoMedico: insc.tratamientoMedico || "",
+        alergias: insc.alergias || "",
+        necesidadesEspeciales: insc.necesidadesEspeciales || false,
+        necesidadesEspecialesDetalle: insc.necesidadesEspecialesDetalle || "",
+        
+        // --- 📘 Pedagogía ---
+        apoyoEscolar: insc.apoyoEscolar || "",
+
+        // --- 📸 Consentimiento ---
+        usoImagen: insc.usoImagen || false,
+
+        // --- 👤 Info Apoderado Relacionado ---
+        apoderadoRelacionado: {
+          nombre: alumno.apoderado.nombre,
+          rut: alumno.apoderado.rut,
+          email: alumno.apoderado.email,
+          telefono: alumno.apoderado.telefono
+        },
+
         porcentajeAsistencia,
         talleres: alumno.inscripciones.map(i => ({
           id: i.taller.id,
@@ -149,16 +173,16 @@ export class ApoderadoController {
 
     return {
       perfil: {
-        nombre: apoderado.nombre,
-        email: apoderado.email,
-        rut: apoderado.rut,
-        telefono: apoderado.telefono
+        nombre: apoderadoData.nombre,
+        email: apoderadoData.email,
+        rut: apoderadoData.rut,
+        telefono: apoderadoData.telefono
       },
       resumen: {
-        totalPupilos: apoderado.alumnos.length,
-        totalTalleres: apoderado.alumnos.reduce((acc, current) => acc + current.inscripciones.length, 0)
+        totalPupilos: apoderadoData.alumnos.length,
+        totalTalleres: apoderadoData.alumnos.reduce((acc, current) => acc + current.inscripciones.length, 0)
       },
-      pupilos: alumnosConEstadisticas
+      pupilos: alumnosConTodo
     };
   }
 
