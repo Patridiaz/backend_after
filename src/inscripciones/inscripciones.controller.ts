@@ -63,7 +63,6 @@ export class InscripcionesController {
           apellidos: alumnoExistente.apellidos,
           fechaNacimiento: alumnoExistente.fechaNacimiento,
           establecimientoNombre: alumnoExistente.establecimiento?.nombre,
-          // Si ya tiene apoderado, también lo devolvemos para autocompletar
           apoderado: {
             rut: alumnoExistente.apoderado.rut,
             nombre: alumnoExistente.apoderado.nombre,
@@ -84,7 +83,7 @@ export class InscripcionesController {
         ]
       },
       include: { sede: true },
-      orderBy: { anio: 'desc' } // El más reciente
+      orderBy: { anio: 'desc' }
     });
 
     if (alumnoSige) {
@@ -94,7 +93,7 @@ export class InscripcionesController {
         datos: {
           nombres: alumnoSige.nombres,
           apellidos: `${alumnoSige.apellidoPaterno} ${alumnoSige.apellidoMaterno}`.trim(),
-          fechaNacimiento: alumnoSige.fechaNacimiento, // Nota: En SIGE es String
+          fechaNacimiento: alumnoSige.fechaNacimiento, 
           establecimientoNombre: alumnoSige.sede?.nombre || null 
         }
       };
@@ -134,215 +133,144 @@ export class InscripcionesController {
 
   @Post('nueva')
   async inscribir(@Body() dto: CreateInscripcioneDto, @Res({ passthrough: true }) response: Response) {
-    // Normalizar RUTs (sin puntos ni guion)
+    const maxRetries = 5;
+    let lastError: any = null;
+
+    // Normalizar RUTs fuera del bucle para ahorrar CPU
     const rutAlumno = dto.rut.trim().toUpperCase().replace(/[^0-9K]/g, '');
     const rutApoderado = dto.rutApoderado.trim().toUpperCase().replace(/[^0-9K]/g, '');
 
-    // 1. Validar duplicidad en el taller
-    const existe = await this.prisma.inscripcion.findFirst({
-      where: {
-        tallerId: dto.tallerId,
-        alumno: { rut: rutAlumno }
-      }
-    });
-
-    if (existe) throw new BadRequestException('El alumno ya está inscrito en este taller.');
-
-    // 2. Transacción
-    return await this.prisma.$transaction(async (tx) => {
-      
-      // A. Validar taller y EDAD
-      const taller = await tx.taller.findUnique({ where: { id: dto.tallerId } });
-      if (!taller) throw new BadRequestException('El taller no existe.');
-
-      const fechaNac = new Date(dto.fechaNacimiento);
-      const edadAlumno = differenceInYears(new Date(), fechaNac);
-
-      if (edadAlumno < taller.edadMinima || edadAlumno > taller.edadMaxima) {
-        throw new BadRequestException(
-          `El alumno tiene ${edadAlumno} años y el taller es para edades entre ${taller.edadMinima} y ${taller.edadMaxima} años.`
-        );
-      }
-
-      // B. Buscar o Crear Apoderado
-      let apoderado = await tx.apoderado.findUnique({ 
-        where: { rut: rutApoderado } 
-      });
-
-      if (!apoderado) {
-        // Primero verificamos si el email ya está en uso por otro apoderado (para dar un error claro)
-        const emailEnUso = await tx.apoderado.findUnique({
-          where: { email: dto.emailApoderado.toLowerCase() }
-        });
-
-        if (emailEnUso) {
-          throw new BadRequestException(
-            `El correo ${dto.emailApoderado} ya está registrado con otro RUT. Por favor, use el mismo RUT asociado a ese correo o un email diferente.`
-          );
-        }
-
-        const hashedPassword = await bcrypt.hash(rutApoderado, 5);
-        
+    for (let i = 1; i <= maxRetries; i++) {
         try {
-          apoderado = await tx.apoderado.create({
-            data: {
-              rut: rutApoderado,
-              nombre: dto.nombreApoderado,
-              telefono: dto.telefonoApoderado || dto.telefono || 'N/A',
-              email: dto.emailApoderado.toLowerCase(),
-              password: hashedPassword
-            }
-          });
-        } catch (error) {
-          if (error.code === 'P2002') {
-            throw new BadRequestException('El RUT o el correo del apoderado ya están registrados en el sistema.');
-          }
-          throw error;
-        }
-      }
+            return await this.prisma.$transaction(async (tx) => {
+                // 1. Taller y Edad
+                const taller = await tx.taller.findUnique({ where: { id: dto.tallerId } });
+                if (!taller) throw new BadRequestException('El taller no existe.');
 
-      // B.1 Buscar o Crear Establecimiento (con normalización para evitar duplicados)
-      let establecimientoId: number | null = null;
-      if (dto.establecimientoNombre) {
-        const estNombre = dto.establecimientoNombre.trim();
-        if (estNombre !== '') {
-          // Buscamos primero por nombre normalizado (insensible a mayúsculas)
-          const estExistente = await tx.establecimiento.findFirst({
-            where: {
-              nombre: { contains: estNombre }
-            }
-          });
+                const fechaNac = new Date(dto.fechaNacimiento);
+                const edadAlumno = differenceInYears(new Date(), fechaNac);
+                if (edadAlumno < taller.edadMinima || edadAlumno > taller.edadMaxima) {
+                    throw new BadRequestException(`El alumno tiene ${edadAlumno} años y el taller es para edades entre ${taller.edadMinima} y ${taller.edadMaxima} años.`);
+                }
 
-          if (estExistente) {
-            establecimientoId = estExistente.id;
-          } else {
-            const nuevo = await tx.establecimiento.create({
-              data: { nombre: estNombre }
+                // 2. Verificar duplicidad
+                const yaInscrito = await tx.inscripcion.findFirst({
+                    where: { tallerId: dto.tallerId, alumno: { rut: rutAlumno } }
+                });
+                if (yaInscrito) throw new BadRequestException('El alumno ya está inscrito en este taller.');
+
+                const yaEnEspera = await tx.listaEspera.findFirst({
+                    where: { tallerId: dto.tallerId, alumno: { rut: rutAlumno } }
+                });
+                if (yaEnEspera) throw new BadRequestException('El alumno ya está en lista de espera.');
+
+                // 3. Buscar/Crear Apoderado
+                let apoderado = await tx.apoderado.findUnique({ where: { rut: rutApoderado } });
+                if (!apoderado) {
+                    const hashedPassword = await bcrypt.hash(rutApoderado, 5);
+                    apoderado = await tx.apoderado.create({
+                        data: {
+                            rut: rutApoderado,
+                            nombre: dto.nombreApoderado,
+                            email: dto.emailApoderado.toLowerCase(),
+                            telefono: dto.telefonoApoderado,
+                            password: hashedPassword
+                        }
+                    });
+                }
+
+                // 3.1 Buscar/Crear Establecimiento
+                let establecimientoId: number | null = null;
+                if (dto.establecimientoNombre) {
+                    const estMatch = await tx.establecimiento.findFirst({
+                        where: { nombre: { contains: dto.establecimientoNombre.trim() } }
+                    });
+                    if (estMatch) {
+                        establecimientoId = estMatch.id;
+                    } else {
+                        const nuevoEst = await tx.establecimiento.create({ data: { nombre: dto.establecimientoNombre.trim() } });
+                        establecimientoId = nuevoEst.id;
+                    }
+                }
+
+                // 4. Buscar/Crear Alumno
+                let alumno = await tx.alumno.findUnique({ where: { rut: rutAlumno } });
+                if (!alumno) {
+                    alumno = await tx.alumno.create({
+                        data: {
+                            rut: rutAlumno,
+                            nombres: dto.nombres,
+                            apellidos: dto.apellidos,
+                            fechaNacimiento: new Date(dto.fechaNacimiento),
+                            apoderadoId: apoderado.id,
+                            establecimientoId: establecimientoId
+                        }
+                    });
+                } else {
+                    alumno = await tx.alumno.update({
+                        where: { id: alumno.id },
+                        data: { apoderadoId: apoderado.id, establecimientoId: establecimientoId || alumno.establecimientoId }
+                    });
+                }
+
+                // 5. Lógica de Cupos vs Lista de Espera 
+                if (taller.cuposDisponibles > 0) {
+                    const nuevaInsc = await tx.inscripcion.create({
+                        data: {
+                            tallerId: dto.tallerId,
+                            alumnoId: alumno.id,
+                            parentesco: (dto.parentesco?.toLowerCase() === 'otro' && dto.parentescoOtro) ? dto.parentescoOtro : dto.parentesco,
+                            enfermedadCronica: dto.enfermedadCronica ?? false,
+                            enfermedadCronicaDetalle: dto.enfermedadCronicaDetalle,
+                            tratamientoMedico: dto.tratamientoMedico,
+                            alergias: dto.alergias,
+                            necesidadesEspeciales: dto.necesidadesEspeciales ?? false,
+                            necesidadesEspecialesDetalle: dto.necesidadesEspecialesDetalle,
+                            apoyoEscolar: dto.apoyoEscolar,
+                            usoImagen: dto.usoImagen ?? false,
+                        }
+                    });
+
+                    await tx.taller.update({
+                        where: { id: dto.tallerId },
+                        data: { cuposDisponibles: { decrement: 1 } }
+                    });
+
+                    // Invalida Caché
+                    try {
+                        const store: any = (this.cacheManager as any).store;
+                        if (store.keys) {
+                            const keys = await store.keys('talleres_disponibles_*');
+                            for (const key of keys) await this.cacheManager.del(key);
+                        }
+                    } catch (e) {}
+
+                    return { status: 'SUCCESS', message: 'Inscripción exitosa.', inscripcionId: nuevaInsc.id };
+                } else {
+                    const totalEspera = await tx.listaEspera.count({ where: { tallerId: dto.tallerId } });
+                    const posicion = totalEspera + 1;
+                    await tx.listaEspera.create({
+                        data: {
+                            alumnoId: alumno.id,
+                            tallerId: dto.tallerId,
+                            posicion,
+                            parentesco: dto.parentesco,
+                            parentescoOtro: dto.parentescoOtro
+                        }
+                    });
+                    response.status(HttpStatus.ACCEPTED);
+                    return { status: 'WAIT_LIST', posicion, message: `Taller lleno. Inscrito en posición ${posicion} de espera.` };
+                }
             });
-            establecimientoId = nuevo.id;
-          }
-        }
-      }
-
-      // B.2 Buscar o Crear Alumno
-      let alumno = await tx.alumno.findUnique({ where: { rut: rutAlumno } });
-
-      if (!alumno) {
-        alumno = await tx.alumno.create({
-          data: {
-            rut: rutAlumno,
-            nombres: dto.nombres,
-            apellidos: dto.apellidos,
-            fechaNacimiento: new Date(dto.fechaNacimiento),
-            apoderadoId: apoderado.id, // Vinculamos con el apoderado
-            establecimientoId: establecimientoId, // Vinculamos establecimiento
-          }
-        });
-      } else {
-        // Si el alumno ya existe, actualizamos su curso, apoderado y establecimiento si es necesario
-        alumno = await tx.alumno.update({
-          where: { id: alumno.id },
-          data: { 
-            apoderadoId: apoderado.id,
-            establecimientoId: establecimientoId || alumno.establecimientoId, // Mantenemos el anterior si no viene uno nuevo
-          }
-        });
-      }
-
-      // C. Descontar Cupos o Lista de Espera
-      try {
-        await tx.taller.update({
-          where: { 
-            id: dto.tallerId,
-            cuposDisponibles: { gt: 0 }
-          },
-          data: {
-            cuposDisponibles: { decrement: 1 }
-          }
-        });
-
-        // D. Crear la Inscripción con Ficha Médica y Consentimiento
-        const nuevaInscripcion = await tx.inscripcion.create({
-          data: {
-            tallerId: dto.tallerId,
-            alumnoId: alumno.id,
-            parentesco: (dto.parentesco?.toLowerCase() === 'otro' && dto.parentescoOtro) 
-              ? dto.parentescoOtro 
-              : dto.parentesco,
-            enfermedadCronica: dto.enfermedadCronica ?? false,
-            enfermedadCronicaDetalle: dto.enfermedadCronicaDetalle || null,
-            tratamientoMedico: dto.tratamientoMedico || null,
-            alergias: dto.alergias || null,
-            necesidadesEspeciales: dto.necesidadesEspeciales ?? false,
-            necesidadesEspecialesDetalle: dto.necesidadesEspecialesDetalle || null,
-            apoyoEscolar: dto.apoyoEscolar || null,
-            usoImagen: dto.usoImagen ?? false,
-          }
-        });
-
-        // Invalida Caché de Talleres (puesto que han cambiado los cupos)
-        try {
-          const store: any = (this.cacheManager as any).store;
-          if (store.keys) {
-            const keys = await store.keys('talleres_disponibles_*');
-            for (const key of keys) {
-              await this.cacheManager.del(key);
+        } catch (error) {
+            lastError = error;
+            if (error.code === 'P2034' || error.message?.includes('Timeout') || error.message?.includes('conflict')) {
+                await new Promise(resolve => setTimeout(resolve, i * 40));
+                continue;
             }
-          }
-        } catch (e) {
-          console.error("Error invalidando caché tras inscripción:", e);
+            throw error;
         }
-
-        return { 
-          status: 'SUCCESS',
-          message: `Inscripción exitosa. El apoderado puede iniciar sesión con: Email: ${apoderado.email} y Contraseña: ${rutApoderado}`,
-          inscripcionId: nuevaInscripcion.id,
-          apoderado: { email: apoderado.email, nombre: apoderado.nombre }
-        };
-
-      } catch (error) {
-        // --- LÓGICA DE LISTA DE ESPERA ---
-        // Si falló el update por cuposDisponibles: { gt: 0 }, venimos aquí.
-        // Pero primero verificamos si no fue un error real de DB.
-        const tallerCheck = await tx.taller.findUnique({ where: { id: dto.tallerId } });
-        if (tallerCheck && tallerCheck.cuposDisponibles > 0) {
-          // Si hay cupos pero falló, fue otro error (ej: el taller desapareció en milisegundos)
-          throw error; 
-        }
-
-        // 1. Verificamos si ya está inscrito (para no duplicar en espera)
-        const yaInscrito = await tx.inscripcion.findFirst({
-          where: { alumnoId: alumno.id, tallerId: dto.tallerId }
-        });
-        if (yaInscrito) throw new BadRequestException('El alumno ya se encuentra inscrito en este taller.');
-
-        // 2. Verificamos si ya está en lista de espera
-        const yaEnEspera = await tx.listaEspera.findFirst({
-          where: { alumnoId: alumno.id, tallerId: dto.tallerId }
-        });
-        if (yaEnEspera) throw new BadRequestException('El alumno ya se encuentra en la lista de espera de este taller.');
-
-        // 3. Crear registro en Lista de Espera
-        await tx.listaEspera.create({
-          data: {
-            alumnoId: alumno.id,
-            tallerId: dto.tallerId
-          }
-        });
-
-        // 4. Calcular posición (contar cuántos hay antes o en total en ese taller)
-        const posicion = await tx.listaEspera.count({
-          where: { tallerId: dto.tallerId }
-        });
-
-        response.status(HttpStatus.ACCEPTED); // Status 202
-        return {
-          status: 'WAIT_LIST',
-          posicion,
-          message: `Taller lleno. El alumno ha quedado en la posición ${posicion} de la lista de espera.`,
-          apoderado: { email: apoderado.email, nombre: apoderado.nombre }
-        };
-      }
-    });
+    }
+    throw lastError;
   }
 }

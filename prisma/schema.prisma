@@ -16,32 +16,27 @@ model Sede {
 }
 
 model Taller {
-  id          Int     @id @default(autoincrement())
-  nombre      String
-  descripcion String? @db.VarChar(500)
-  edadMinima  Int
-  edadMaxima  Int
-
-  horarios HorarioTaller[]
-
+  id               Int              @id @default(autoincrement())
+  nombre           String
+  descripcion      String?          @db.VarChar(500)
+  edadMinima       Int
+  edadMaxima       Int
+  horarios         HorarioTaller[]
   cuposTotales     Int
-  cuposDisponibles Int // Campo crítico para concurrencia
-
-  sedeId Int
-  sede   Sede @relation(fields: [sedeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-
-  inscripciones Inscripcion[]
-
-  profesores  ProfesorTaller[]
-  asistencias Asistencia[]
-  listaEspera ListaEspera[] @relation("TallerEnEspera")
+  cuposDisponibles Int
+  sedeId           Int
+  sede             Sede             @relation(fields: [sedeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  inscripciones    Inscripcion[]
+  profesores       ProfesorTaller[]
+  asistencias      Asistencia[]
+  listaEspera      ListaEspera[]    @relation("TallerEnEspera")
 }
 
 model HorarioTaller {
   id           Int    @id @default(autoincrement())
   tallerId     Int
   taller       Taller @relation(fields: [tallerId], references: [id], onDelete: Cascade)
-  diaSemana    String // Ej: "Martes"
+  diaSemana    String
   horaInicio   Int
   minutoInicio Int
   horaFin      Int
@@ -49,14 +44,14 @@ model HorarioTaller {
 }
 
 model Apoderado {
-  id        Int      @id @default(autoincrement())
-  rut       String   @unique
-  nombre    String
-  telefono  String
-  email     String   @unique
-  password  String // Hash del RUT del apoderado
-  alumnos   Alumno[]
-  createdAt DateTime @default(now())
+  id            Int           @id @default(autoincrement())
+  rut           String        @unique
+  nombre        String
+  telefono      String
+  email         String        @unique
+  password      String
+  alumnos       Alumno[]
+  createdAt     DateTime      @default(now())
 }
 
 model Establecimiento {
@@ -75,120 +70,92 @@ model CursoAlumno {
 }
 
 model Alumno {
-  id              Int      @id @default(autoincrement())
-  rut             String   @unique
-  nombres         String
-  apellidos       String
-  fechaNacimiento DateTime
-  curso           String?
-
-  // Relación con Apoderado
-  apoderadoId Int
-  apoderado   Apoderado @relation(fields: [apoderadoId], references: [id])
-
-  // Relación con Establecimiento Estudiantil
+  id                Int              @id @default(autoincrement())
+  rut               String           @unique
+  nombres           String
+  apellidos         String
+  fechaNacimiento   DateTime
+  curso             String?
+  apoderadoId       Int
+  apoderado         Apoderado        @relation(fields: [apoderadoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   establecimientoId Int?
-  establecimiento   Establecimiento? @relation(fields: [establecimientoId], references: [id])
-
-  // Relación Estricta con Curso
-  cursoAlumnoId Int?
-  cursoAlumno   CursoAlumno? @relation(fields: [cursoAlumnoId], references: [id])
-
-  inscripciones Inscripcion[]
-  createdAt     DateTime      @default(now())
-  asistencias   Asistencia[]
-  listaEspera   ListaEspera[] @relation("AlumnoEnEspera")
+  establecimiento   Establecimiento? @relation(fields: [establecimientoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  cursoAlumnoId     Int?
+  cursoAlumno       CursoAlumno?     @relation(fields: [cursoAlumnoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  inscripciones     Inscripcion[]
+  createdAt         DateTime         @default(now())
+  asistencias       Asistencia[]
+  listaEspera       ListaEspera[]    @relation("AlumnoEnEspera")
 }
 
 model Inscripcion {
-  id    Int      @id @default(autoincrement())
-  fecha DateTime @default(now())
+  id          Int      @id @default(autoincrement())
+  fecha       DateTime @default(now())
+  
+  alumnoId    Int
+  alumno      Alumno   @relation(fields: [alumnoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  
+  tallerId    Int
+  taller      Taller   @relation(fields: [tallerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  
+  // Apoderado eliminado de aquí para evitar redundancia y ciclos
+  
+  parentesco     String? @db.VarChar(100)
+  parentescoOtro String? @db.VarChar(100)
 
-  alumnoId Int
-  alumno   Alumno @relation(fields: [alumnoId], references: [id])
-
-  tallerId Int
-  taller   Taller @relation(fields: [tallerId], references: [id])
-
-  parentesco String? @db.VarChar(100)
-
-  // Ficha Médica y Consentimiento (Nuevos campos)
-  enfermedadCronica           Boolean @default(false)
-  enfermedadCronicaDetalle    String? @db.VarChar(1000)
-  tratamientoMedico           String? @db.VarChar(1000)
-  alergias                    String? @db.VarChar(1000)
-  necesidadesEspeciales       Boolean @default(false)
+  enfermedadCronica            Boolean @default(false)
+  enfermedadCronicaDetalle     String? @db.VarChar(1000)
+  tratamientoMedico            String? @db.VarChar(1000)
+  alergias                     String? @db.VarChar(1000)
+  necesidadesEspeciales        Boolean @default(false)
   necesidadesEspecialesDetalle String? @db.VarChar(1000)
-  apoyoEscolar                String? @db.VarChar(1000)
-  usoImagen                   Boolean @default(false)
+  apoyoEscolar                 String? @db.VarChar(1000)
+  usoImagen                    Boolean @default(false)
 
-  // Restricción: Un alumno no puede inscribirse dos veces al mismo taller
   @@unique([alumnoId, tallerId])
 }
 
 model UsuarioLocal {
-  id     Int    @id @default(autoincrement())
-  email  String @unique
-  nombre String
-
-  // ID del usuario en ticket-service (opcional si es un usuario puramente local)
-  externalId Int? @unique
-
-  rol String @default("PROFESOR") // ADMIN, COORDINADOR, ENCARGADO_ESCUELA, PROFESOR
-
-  // Relación opcional con Sede (Específico para ENCARGADO_ESCUELA)
-  sedeId Int?
-  sede   Sede? @relation(fields: [sedeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-
-  // Relación con los talleres que imparte (Si es PROFESOR)
-  talleres ProfesorTaller[]
+  id         Int    @id @default(autoincrement())
+  email      String @unique
+  nombre     String
+  externalId Int?   @unique
+  rol        String @default("PROFESOR")
+  sedeId     Int?
+  sede       Sede?  @relation(fields: [sedeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  isActive   Boolean @default(true)
+  createdAt  DateTime @default(now())
+  talleres   ProfesorTaller[]
 }
 
-// Tabla intermedia para asignar usuarios (local o externos) a talleres
 model ProfesorTaller {
-  id Int @id @default(autoincrement())
-
+  id        Int          @id @default(autoincrement())
   usuarioId Int
   usuario   UsuarioLocal @relation(fields: [usuarioId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-
-  tallerId Int
-  taller   Taller @relation(fields: [tallerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tallerId  Int
+  taller    Taller       @relation(fields: [tallerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([usuarioId, tallerId])
 }
 
 model Asistencia {
-  id     Int      @id @default(autoincrement())
-  fecha  DateTime // La fecha de la clase
-  estado String // 'P' (Presente), 'A' (Ausente), 'J' (Justificado), 'R' (Retraso)
-
-  alumnoId Int
-  alumno   Alumno @relation(fields: [alumnoId], references: [id])
-
-  tallerId Int
-  taller   Taller @relation(fields: [tallerId], references: [id])
-
-  registradoPor Int // ID del usuario (profe/admin) que tomó la lista
+  id            Int      @id @default(autoincrement())
+  fecha         DateTime
+  estado        String
+  alumnoId      Int
+  alumno        Alumno   @relation(fields: [alumnoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tallerId      Int
+  taller        Taller   @relation(fields: [tallerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  registradoPor Int
   createdAt     DateTime @default(now())
 
-  // Un alumno solo puede tener una asistencia por taller en una fecha específica
   @@unique([tallerId, alumnoId, fecha])
 }
 
-// ----------------------------------------------------
-// TABLA PARA CARGA MASIVA SIGE
-// ----------------------------------------------------
 model AlumnoSige {
-  id Int @id @default(autoincrement())
-
-  // Relacionamos al Alumno SIGE directamente con un Establecimiento (Sede)
-  sedeId Int
-  sede   Sede @relation(fields: [sedeId], references: [id])
-
-  // Campos basados en la planilla SIGE compartida
+  id                   Int      @id @default(autoincrement())
+  sedeId               Int
+  sede                 Sede     @relation(fields: [sedeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   anio                 Int?
   rbd                  Int?
   codTipoEnsenanza     Int?
@@ -207,32 +174,30 @@ model AlumnoSige {
   email                String?
   telefono             String?
   celular              String?
-  fechaNacimiento      String? // Lo guardaremos como string para evitar errores de parseo de excel
+  fechaNacimiento      String?
   codigoEtnia          String?
   fechaIncorporacion   String?
   fechaRetiro          String?
   porcentajeAsistencia Float?
   promedioFinal        Float?
+  runc                 String
+  nombrec              String
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
-  // Campos concatenados calculados
-  runc    String
-  nombrec String
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Limitamos para no crear alumnos duplicados por año en la misma sede
   @@unique([runc, anio, sedeId])
 }
 
 model ListaEspera {
-  id        Int      @id @default(autoincrement())
-  alumnoId  Int
-  tallerId  Int
-  fecha     DateTime @default(now())
-  
-  alumno    Alumno   @relation("AlumnoEnEspera", fields: [alumnoId], references: [id])
-  taller    Taller   @relation("TallerEnEspera", fields: [tallerId], references: [id])
+  id             Int      @id @default(autoincrement())
+  alumnoId       Int
+  tallerId       Int
+  posicion       Int      @default(0)
+  parentesco     String?
+  parentescoOtro String?
+  fecha          DateTime @default(now())
+  alumno         Alumno   @relation("AlumnoEnEspera", fields: [alumnoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  taller         Taller   @relation("TallerEnEspera", fields: [tallerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([alumnoId, tallerId])
 }
