@@ -8,9 +8,14 @@ import { UpdateTallerDto } from './dto/update-taller.dto';
 import { AssignProfesorDto } from './dto/assign-profesor.dto';
 import { AuthGuard } from '@nestjs/passport';
 
+import { AnalyticsService } from '../analytics/analytics.service';
+
 @Controller('talleres')
 export class TalleresController {
-  constructor(private readonly talleresService: TalleresService) {}
+  constructor(
+    private readonly talleresService: TalleresService,
+    private readonly analyticsService: AnalyticsService
+  ) {}
 
   // --- ENDPOINTS ADMINISTRADOR ---
 
@@ -171,6 +176,14 @@ export class TalleresController {
   @Get('disponibles')
   getTalleres(@Query() params: FilterTallerDto) {
     return this.talleresService.findAvailable(params);
+  }
+
+  // 🥈 Nivel 2: Registro de Interés Estratégico (Público)
+  @Post(':id/interes')
+  async trackInterestPost(@Param('id') id: string) {
+    // Registramos el interés de forma asíncrona (fire-and-forget)
+    this.analyticsService.trackInterest(+id).catch(() => {});
+    return { success: true };
   }
 
   // RUTA PARA PROFESORES: Mis talleres asignados

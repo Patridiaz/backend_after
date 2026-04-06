@@ -30,6 +30,7 @@ model Taller {
   profesores       ProfesorTaller[]
   asistencias      Asistencia[]
   listaEspera      ListaEspera[]    @relation("TallerEnEspera")
+  intereses        InteresTaller[]
 }
 
 model HorarioTaller {
@@ -214,4 +215,20 @@ model ListaEspera {
   apoderado      Apoderado @relation("ApoderadoEnEspera", fields: [apoderadoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([alumnoId, tallerId])
+}
+
+// --- 🥉🥈🥇 MODELOS DE IMPACTO Y ANALÍTICA ---
+
+model Visita {
+  id        Int      @id @default(autoincrement())
+  fecha     DateTime @default(now())
+  path      String   @db.VarChar(500)
+  userAgent String?  @db.VarChar(1000)
+}
+
+model InteresTaller {
+  id              Int      @id @default(autoincrement())
+  tallerId        Int
+  taller          Taller   @relation(fields: [tallerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fecha           DateTime @default(now())
 }
