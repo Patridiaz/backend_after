@@ -4,6 +4,7 @@ import type { Cache } from 'cache-manager';
 import type { Response } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateInscripcioneDto } from './dto/create-inscripcione.dto';
+import { MailService } from '../mail/mail.service';
 import * as bcrypt from 'bcrypt';
 import { differenceInYears } from 'date-fns';
 
@@ -11,6 +12,7 @@ import { differenceInYears } from 'date-fns';
 export class InscripcionesController {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly mailService: MailService,
     @Inject(CACHE_MANAGER) private cacheManager: Cache
   ) {}
 
@@ -142,9 +144,12 @@ export class InscripcionesController {
 
     for (let i = 1; i <= maxRetries; i++) {
         try {
-            return await this.prisma.$transaction(async (tx) => {
-                // 1. Taller y Edad
-                const taller = await tx.taller.findUnique({ where: { id: dto.tallerId } });
+            const result = await this.prisma.$transaction(async (tx) => {
+                // 1. Taller y Edad (Traemos Sede y Horarios para el correo)
+                const taller = await tx.taller.findUnique({ 
+                  where: { id: dto.tallerId },
+                  include: { sede: true, horarios: true }
+                });
                 if (!taller) throw new BadRequestException('El taller no existe.');
 
                 const fechaNac = new Date(dto.fechaNacimiento);
@@ -153,7 +158,7 @@ export class InscripcionesController {
                     throw new BadRequestException(`El alumno tiene ${edadAlumno} años y el taller es para edades entre ${taller.edadMinima} y ${taller.edadMaxima} años.`);
                 }
 
-                // 2. Verificar duplicidad
+                // ... (Verificaciones de duplicidad, etc.)
                 const yaInscrito = await tx.inscripcion.findFirst({
                     where: { tallerId: dto.tallerId, alumno: { rut: rutAlumno } }
                 });
@@ -164,7 +169,7 @@ export class InscripcionesController {
                 });
                 if (yaEnEspera) throw new BadRequestException('El alumno ya está en lista de espera.');
 
-                // 3. Buscar/Crear Apoderado
+                // 3. Apoderado y Alumno...
                 let apoderado = await tx.apoderado.findUnique({ where: { rut: rutApoderado } });
                 if (!apoderado) {
                     const hashedPassword = await bcrypt.hash(rutApoderado, 5);
@@ -179,7 +184,7 @@ export class InscripcionesController {
                     });
                 }
 
-                // 3.1 Buscar/Crear Establecimiento
+                // ... (Establecimiento y Alumno)
                 let establecimientoId: number | null = null;
                 if (dto.establecimientoNombre) {
                     const estMatch = await tx.establecimiento.findFirst({
@@ -193,7 +198,6 @@ export class InscripcionesController {
                     }
                 }
 
-                // 4. Buscar/Crear Alumno
                 let alumno = await tx.alumno.findUnique({ where: { rut: rutAlumno } });
                 if (!alumno) {
                     alumno = await tx.alumno.create({
@@ -245,7 +249,7 @@ export class InscripcionesController {
                         }
                     } catch (e) {}
 
-                    return { status: 'SUCCESS', message: 'Inscripción exitosa.', inscripcionId: nuevaInsc.id };
+                    return { status: 'SUCCESS', message: 'Inscripción exitosa.', taller, apoderado, dto };
                 } else {
                     const totalEspera = await tx.listaEspera.count({ where: { tallerId: dto.tallerId } });
                     const posicion = totalEspera + 1;
@@ -253,15 +257,52 @@ export class InscripcionesController {
                         data: {
                             alumnoId: alumno.id,
                             tallerId: dto.tallerId,
+                            apoderadoId: apoderado.id, // Vinculación directa con el apoderado
                             posicion,
-                            parentesco: dto.parentesco,
-                            parentescoOtro: dto.parentescoOtro
+                            parentesco: (dto.parentesco?.toLowerCase() === 'otro' && dto.parentescoOtro) ? dto.parentescoOtro : dto.parentesco,
+                            parentescoOtro: dto.parentescoOtro,
+                            enfermedadCronica: dto.enfermedadCronica ?? false,
+                            enfermedadCronicaDetalle: dto.enfermedadCronicaDetalle,
+                            tratamientoMedico: dto.tratamientoMedico,
+                            alergias: dto.alergias,
+                            necesidadesEspeciales: dto.necesidadesEspeciales ?? false,
+                            necesidadesEspecialesDetalle: dto.necesidadesEspecialesDetalle,
+                            apoyoEscolar: dto.apoyoEscolar,
+                            usoImagen: dto.usoImagen ?? false,
                         }
                     });
-                    response.status(HttpStatus.ACCEPTED);
-                    return { status: 'WAIT_LIST', posicion, message: `Taller lleno. Inscrito en posición ${posicion} de espera.` };
+                    
+                    return { status: 'WAIT_LIST', posicion, message: `Taller lleno. Inscrito en posición ${posicion} de espera.`, taller, apoderado, dto };
                 }
             });
+
+            // --- 🚀 DISPARO DE CORREOS POST-TRANSACCIÓN (GARANTIZADO) ---
+            if (result.status === 'SUCCESS') {
+                this.mailService.sendEnrollmentConfirmation(
+                    result.dto.emailApoderado.toLowerCase(),
+                    result.dto.nombres,
+                    result.taller.nombre,
+                    result.taller.sede?.nombre || 'Sede Central',
+                    result.taller.horarios || [],
+                    result.dto
+                ).catch(e => console.error('Error post-inscripción:', e));
+                
+                return { status: 'SUCCESS', message: result.message };
+            } else if (result.status === 'WAIT_LIST') {
+                console.log(`📧 Enviando Lista de Espera post-commit: ${result.dto.emailApoderado}`);
+                
+                this.mailService.sendWaitListConfirmation(
+                    result.dto.emailApoderado.toLowerCase(),
+                    result.dto.nombres,
+                    result.taller.nombre,
+                    result.taller.sede?.nombre || 'Sede Central',
+                    result.taller.horarios || [],
+                    result.dto
+                ).catch(e => console.error('Error post-espera:', e));
+                
+                response.status(HttpStatus.ACCEPTED);
+                return { status: 'WAIT_LIST', posicion: result.posicion, message: result.message };
+            }
         } catch (error) {
             lastError = error;
             if (error.code === 'P2034' || error.message?.includes('Timeout') || error.message?.includes('conflict')) {

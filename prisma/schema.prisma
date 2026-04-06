@@ -51,6 +51,7 @@ model Apoderado {
   email         String        @unique
   password      String
   alumnos       Alumno[]
+  listaEspera   ListaEspera[] @relation("ApoderadoEnEspera")
   createdAt     DateTime      @default(now())
 }
 
@@ -192,12 +193,25 @@ model ListaEspera {
   id             Int      @id @default(autoincrement())
   alumnoId       Int
   tallerId       Int
+  apoderadoId    Int      @default(0) // Vinculamos directamente al apoderado para trazabilidad
   posicion       Int      @default(0)
   parentesco     String?
   parentescoOtro String?
+  
+  // Guardamos la ficha completa para no perderla si pasa a inscripción real
+  enfermedadCronica            Boolean @default(false)
+  enfermedadCronicaDetalle     String? @db.VarChar(1000)
+  tratamientoMedico            String? @db.VarChar(1000)
+  alergias                     String? @db.VarChar(1000)
+  necesidadesEspeciales        Boolean @default(false)
+  necesidadesEspecialesDetalle String? @db.VarChar(1000)
+  apoyoEscolar                 String? @db.VarChar(1000)
+  usoImagen                    Boolean @default(false)
+
   fecha          DateTime @default(now())
   alumno         Alumno   @relation("AlumnoEnEspera", fields: [alumnoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   taller         Taller   @relation("TallerEnEspera", fields: [tallerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  apoderado      Apoderado @relation("ApoderadoEnEspera", fields: [apoderadoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([alumnoId, tallerId])
 }
