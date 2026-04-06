@@ -111,7 +111,7 @@ export class MailService {
 
     try {
       await this.transporter.sendMail({
-        from: '"AfterSchool Huechuraba" <afterschool@eduhuechuraba.cl>',
+        from: '"After School Huechuraba" <afterschool@eduhuechuraba.cl>',
         to,
         subject: `Lista de Espera: ${alumnoNombre} - Taller: ${tallerNombre}`,
         html: htmlContent,
@@ -161,7 +161,7 @@ export class MailService {
       <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: auto; border: 1px solid #e0e0e0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
         <div style="background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%); padding: 30px; text-align: center; color: white;">
           <h1 style="margin: 0; font-size: 24px; letter-spacing: 1px;">¡Inscripción Exitosa!</h1>
-          <p style="margin: 10px 0 0 0; opacity: 0.9;">AfterSchool Huechuraba 2026</p>
+          <p style="margin: 10px 0 0 0; opacity: 0.9;">After School Huechuraba 2026</p>
         </div>
         
         <div style="padding: 30px; background-color: white; line-height: 1.6; color: #374151;">
@@ -216,7 +216,7 @@ export class MailService {
 
     try {
       await this.transporter.sendMail({
-        from: '"AfterSchool Huechuraba" <afterschool@eduhuechuraba.cl>',
+        from: '"After School Huechuraba" <afterschool@eduhuechuraba.cl>',
         to,
         subject: `Confirmación: ${alumnoNombre} empieza el ${fechaInicioOficial}`,
         html: htmlContent,
