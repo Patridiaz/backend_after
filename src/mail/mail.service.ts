@@ -11,8 +11,8 @@ export class MailService {
       port: 465,
       secure: true,
       auth: {
-        user: 'afterschool@eduhuechuraba.cl',
-        pass: 'odcp pqvx exbr zsmh',
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
       },
     });
   }
