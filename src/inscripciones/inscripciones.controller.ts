@@ -1,5 +1,6 @@
-import { Controller, Post, Body, BadRequestException, Get, Param, Res, HttpStatus, Inject } from '@nestjs/common';
+import { Controller, Post, Body, BadRequestException, Get, Param, Res, HttpStatus, Inject, UseGuards, Req, UnauthorizedException } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { AuthGuard } from '@nestjs/passport';
 import type { Cache } from 'cache-manager';
 import type { Response } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
@@ -7,7 +8,6 @@ import { CreateInscripcioneDto } from './dto/create-inscripcione.dto';
 import { MailService } from '../mail/mail.service';
 import * as bcrypt from 'bcrypt';
 import { differenceInYears } from 'date-fns';
-
 import { AuditService } from '../audit/audit.service';
 
 @Controller('inscripciones')
@@ -18,6 +18,79 @@ export class InscripcionesController {
     private readonly auditService: AuditService,
     @Inject(CACHE_MANAGER) private cacheManager: Cache
   ) {}
+
+  // --- 🥉🥈🥇 ENDPOINTS DE ALTA RESOLUCIÓN Y AUDITORÍA ---
+
+  @Get('ficha/:id')
+  @UseGuards(AuthGuard('jwt'))
+  async getFichaInscripcion(@Param('id') id: string, @Req() req: any) {
+    this.checkAdminOrCoordinador(req.user);
+    const searchId = +id;
+
+    // 1. Intentamos buscar en Inscripciones Confirmadas (Por ID de Inscripción)
+    let ficha: any = await this.prisma.inscripcion.findUnique({
+      where: { id: searchId },
+      include: {
+        alumno: { include: { establecimiento: true, apoderado: true } },
+        taller: { include: { sede: true } }
+      }
+    });
+
+    // 2. Si no es un ID de Inscripción, probamos con ID de Lista de Espera
+    if (!ficha) {
+      ficha = await this.prisma.listaEspera.findUnique({
+        where: { id: searchId },
+        include: {
+          alumno: { include: { establecimiento: true, apoderado: true } },
+          taller: { include: { sede: true } },
+          apoderado: true
+        }
+      });
+    }
+
+    // 3. ✨ ÚLTIMA OPORTUNIDAD: Probamos si el ID es en realidad el de un ALUMNO
+    if (!ficha) {
+      // Buscamos la inscripción más reciente para ese ID de Alumno
+      ficha = await this.prisma.inscripcion.findFirst({
+        where: { alumnoId: searchId },
+        include: {
+          alumno: { include: { establecimiento: true, apoderado: true } },
+          taller: { include: { sede: true } }
+        },
+        orderBy: { id: 'desc' }
+      });
+
+      if (!ficha) {
+        // Buscamos la espera más reciente para ese ID de Alumno
+        ficha = await this.prisma.listaEspera.findFirst({
+          where: { alumnoId: searchId },
+          include: {
+            alumno: { include: { establecimiento: true, apoderado: true } },
+            taller: { include: { sede: true } },
+            apoderado: true
+          },
+          orderBy: { id: 'desc' }
+        });
+      }
+    }
+
+    if (!ficha) throw new BadRequestException('Ficha no encontrada después de buscar en todos los registros vinculados.');
+
+    // 🛡️ Log del Administrador con trazabilidad de RUT
+    await this.auditService.log('VIEW', 'FichaAlumno', searchId, `Consulta de expediente para alumno: ${ficha.alumno.rut}`, req.user.nombre);
+
+    return ficha;
+  }
+
+  private checkAdminOrCoordinador(user: any) {
+    const roles: string[] = user.roles || [];
+    const hasRole = roles.some((r: string) => 
+      ['ADMIN', 'COORDINADOR'].includes(r.toUpperCase())
+    );
+    if (!hasRole) {
+      throw new UnauthorizedException('Acceso denegado. Se requiere rol de Administrador o Coordinador.');
+    }
+  }
 
   @Get('auditoria-sige')
   async getAuditoriaSige() {
@@ -44,7 +117,7 @@ export class InscripcionesController {
         sedeId: { in: idsMunicipales },
         OR: [
           { runc: { in: runsInscritos } },
-          { runc: { in: runsInscritos.map(r => r.length > 1 ? r.slice(0, -1) + '-' + r.slice(-1) : r) } }
+          { runc: { in: runsInscritos.map((r: string) => r.length > 1 ? r.slice(0, -1) + '-' + r.slice(-1) : r) } }
         ]
       },
       include: { sede: true }
@@ -66,6 +139,7 @@ export class InscripcionesController {
           if (!ins) return null;
           
           return {
+            id: ins.id, // <--- LA LLAVE MAESTRA REQUERIDA ✨🛡️🏎️
             rut: ins.alumno.rut,
             nombres: ins.alumno.nombres,
             apellidos: ins.alumno.apellidos,

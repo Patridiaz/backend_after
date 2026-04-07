@@ -152,6 +152,70 @@ export class TalleresController {
     return this.talleresService.getRankingAsistencia();
   }
 
+  // 🥉🥈🥇 DASHBOARD DE OCUPACIÓN MAESTRO (Real-Time)
+  @UseGuards(AuthGuard('jwt'))
+  @Get('admin/reporte-ocupacion')
+  async getReporteOcupacion(@Req() req: any) {
+    this.checkAdminOrCoordinador(req.user);
+
+    const talleres = await this.talleresService['prisma'].taller.findMany({
+      include: {
+        sede: true,
+        _count: {
+          select: {
+            inscripciones: true,
+            listaEspera: true
+          }
+        }
+      },
+      orderBy: { sedeId: 'asc' }
+    });
+
+    return talleres.map(t => {
+      const porcentaje = t.cuposTotales > 0 
+        ? Math.round((t._count.inscripciones / t.cuposTotales) * 100) 
+        : 0;
+
+      return {
+        id: t.id,
+        nombre: t.nombre,
+        sede: t.sede.nombre,
+        cuposTotales: t.cuposTotales,
+        inscritos: t._count.inscripciones,
+        enEspera: t._count.listaEspera,
+        ocupacion: porcentaje,
+        estado: t.cuposDisponibles <= 0 ? 'LLENO' : 'DISPONIBLE'
+      };
+    });
+  }
+
+  // 🥉🥈🥇 RESUMEN GLOBAL DE CAPACIDAD (KPI Maestro)
+  @UseGuards(AuthGuard('jwt'))
+  @Get('admin/resumen-cupos')
+  async getResumenCupos(@Req() req: any) {
+    this.checkAdminOrCoordinador(req.user);
+
+    const agregados = await this.talleresService['prisma'].taller.aggregate({
+      _sum: {
+        cuposTotales: true,
+        cuposDisponibles: true
+      }
+    });
+
+    // Contamos inscripciones reales (Matrícula efectuada)
+    const totalInscritos = await this.talleresService['prisma'].inscripcion.count();
+    const cuposTotales = agregados._sum.cuposTotales || 0;
+
+    return {
+      capacidadSistemas: cuposTotales,
+      matriculaEfectuada: totalInscritos,
+      vacantesRestantes: agregados._sum.cuposDisponibles || 0,
+      ocupacionGlobal: cuposTotales > 0 
+        ? Math.round((totalInscritos / cuposTotales) * 100) 
+        : 0
+    };
+  }
+
 
   // RUTA MAESTRA: Configuración Escolar SIGE
   @Get('config/escolar')
