@@ -232,3 +232,13 @@ model InteresTaller {
   taller          Taller   @relation(fields: [tallerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   fecha           DateTime @default(now())
 }
+
+model LogCambio {
+  id          Int      @id @default(autoincrement())
+  fecha       DateTime @default(now())
+  usuario     String?  // Nombre o ID del administrador (si aplica)
+  accion      String   // ej: 'CREATE', 'UPDATE', 'DELETE'
+  tabla       String   // ej: 'Inscripcion', 'Taller'
+  registroId  Int?     // ID del registro afectado
+  detalle     String?  @db.VarChar(1000) // JSON o texto descriptivo
+}

@@ -10,11 +10,14 @@ import { AuthGuard } from '@nestjs/passport';
 
 import { AnalyticsService } from '../analytics/analytics.service';
 
+import { AuditService } from '../audit/audit.service';
+
 @Controller('talleres')
 export class TalleresController {
   constructor(
     private readonly talleresService: TalleresService,
-    private readonly analyticsService: AnalyticsService
+    private readonly analyticsService: AnalyticsService,
+    private readonly auditService: AuditService
   ) {}
 
   // --- ENDPOINTS ADMINISTRADOR ---
@@ -23,21 +26,27 @@ export class TalleresController {
   @UseGuards(AuthGuard('jwt'))
   async updateTaller(@Param('id') id: string, @Body() dto: UpdateTallerDto, @Req() req: any) {
     this.checkAdmin(req.user);
-    return this.talleresService.updateTaller(+id, dto);
+    const res = await this.talleresService.updateTaller(+id, dto);
+    await this.auditService.log('UPDATE', 'Taller', +id, JSON.stringify(dto), req.user.nombre);
+    return res;
   }
 
   @Delete(':id')
   @UseGuards(AuthGuard('jwt'))
   async deleteTaller(@Param('id') id: string, @Req() req: any) {
     this.checkAdmin(req.user);
-    return this.talleresService.deleteTaller(+id);
+    const res = await this.talleresService.deleteTaller(+id);
+    await this.auditService.log('DELETE', 'Taller', +id, `Eliminado taller ID ${id}`, req.user.nombre);
+    return res;
   }
 
   @Post('sede')
   @UseGuards(AuthGuard('jwt'))
   async createSede(@Body() dto: CreateSedeDto, @Req() req: any) {
     this.checkAdmin(req.user);
-    return this.talleresService.createSede(dto);
+    const res = await this.talleresService.createSede(dto);
+    await this.auditService.log('CREATE', 'Sede', res.id, `Sede creada: ${dto.nombre}`, req.user.nombre);
+    return res;
   }
 
   @Patch('sede/:id')
@@ -58,7 +67,9 @@ export class TalleresController {
   @UseGuards(AuthGuard('jwt'))
   async createTaller(@Body() dto: CreateTallerDto, @Req() req: any) {
     this.checkAdmin(req.user);
-    return this.talleresService.createTaller(dto);
+    const res = await this.talleresService.createTaller(dto);
+    await this.auditService.log('CREATE', 'Taller', res.id, `Taller creado: ${dto.nombre}`, req.user.nombre);
+    return res;
   }
 
   @Post('asignar-profesor')

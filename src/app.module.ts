@@ -15,6 +15,7 @@ import { UsuariosModule } from './usuarios/usuarios.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { AnalyticsMiddleware } from './analytics/analytics.middleware';
 import { PrismaModule } from './prisma/prisma.module';
+import { AuditModule } from './audit/audit.module';
 
 @Module({
   imports: [
@@ -30,7 +31,8 @@ import { PrismaModule } from './prisma/prisma.module';
     ApoderadoModule,
     SigeModule,
     UsuariosModule,
-    AnalyticsModule
+    AnalyticsModule,
+    AuditModule
   ],
   controllers: [AppController, ConfigController],
   providers: [AppService],

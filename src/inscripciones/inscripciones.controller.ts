@@ -8,11 +8,14 @@ import { MailService } from '../mail/mail.service';
 import * as bcrypt from 'bcrypt';
 import { differenceInYears } from 'date-fns';
 
+import { AuditService } from '../audit/audit.service';
+
 @Controller('inscripciones')
 export class InscripcionesController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mailService: MailService,
+    private readonly auditService: AuditService,
     @Inject(CACHE_MANAGER) private cacheManager: Cache
   ) {}
 
@@ -373,11 +376,13 @@ export class InscripcionesController {
                         }
                     } catch (e) {}
 
+                    await this.auditService.log('CREATE', 'Inscripcion', nuevaInsc.id, `Alumno ${alumno.rut} inscrito en taller ${dto.tallerId}`);
+
                     return { status: 'SUCCESS', message: 'Inscripción exitosa.', taller, apoderado, dto };
                 } else {
                     const totalEspera = await tx.listaEspera.count({ where: { tallerId: dto.tallerId } });
                     const posicion = totalEspera + 1;
-                    await tx.listaEspera.create({
+                    const nEspera = await tx.listaEspera.create({
                         data: {
                             alumnoId: alumno.id,
                             tallerId: dto.tallerId,
@@ -395,6 +400,8 @@ export class InscripcionesController {
                             usoImagen: dto.usoImagen ?? false,
                         }
                     });
+
+                    await this.auditService.log('CREATE', 'ListaEspera', nEspera.id, `Alumno ${alumno.rut} en lista de espera pos ${posicion} taller ${dto.tallerId}`);
                     
                     return { status: 'WAIT_LIST', posicion, message: `Taller lleno. Inscrito en posición ${posicion} de espera.`, taller, apoderado, dto };
                 }
