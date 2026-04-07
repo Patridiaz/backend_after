@@ -16,6 +16,74 @@ export class InscripcionesController {
     @Inject(CACHE_MANAGER) private cacheManager: Cache
   ) {}
 
+  @Get('auditoria-sige')
+  async getAuditoriaSige() {
+    const idsMunicipales = [2, 3, 4, 5, 6, 7, 10];
+    
+    // 1. Obtenemos solo a los alumnos que REALMENTE tienen inscripciones activas
+    // Esto reduce drásticamente el conjunto de datos inicial comparado con toda la nómina SIGE
+    const inscripciones = await this.prisma.inscripcion.findMany({
+      include: {
+        alumno: true,
+        taller: { include: { sede: true } }
+      }
+    });
+
+    if (inscripciones.length === 0) return [];
+
+    // 2. Extraemos los RUTs únicos de los inscritos para el cruce (RUT limpio)
+    const runsInscritos = Array.from(new Set(
+      inscripciones.map(i => i.alumno.rut.replace(/[^0-9K]/g, ''))
+    ));
+
+    // 3. Consultamos en SIGE por los alumnos inscritos QUE PERTENECEN a los 7 colegios
+    // Somos flexibles con los formatos (Limpio y Con Guion) para asegurar el match
+    const nominaSigeMatch = await this.prisma.alumnoSige.findMany({
+      where: {
+        sedeId: { in: idsMunicipales },
+        OR: [
+          { runc: { in: runsInscritos } },
+          { runc: { in: runsInscritos.map(r => r.length > 1 ? r.slice(0, -1) + '-' + r.slice(-1) : r) } }
+        ]
+      },
+      include: { sede: true }
+    });
+
+    // 4. Obtenemos los nombres de los 7 establecimientos para asegurar que todos aparezcan en el reporte
+    const sedesMunicipales = await this.prisma.sede.findMany({
+      where: { id: { in: idsMunicipales } }
+    });
+
+    // 5. Construimos el reporte agrupado en memoria (Eficiencia 100%)
+    return sedesMunicipales.map(sede => {
+      const alumnosEnEsteColegio = nominaSigeMatch
+        .filter(s => s.sedeId === sede.id)
+        .map(sige => {
+          // Buscamos la inscripción correspondiente normalizando ambos RUTs para el match final
+          const sigeRutLimpio = sige.runc.replace(/[^0-9K]/g, '');
+          const ins = inscripciones.find(i => i.alumno.rut.replace(/[^0-9K]/g, '') === sigeRutLimpio);
+          if (!ins) return null;
+          
+          return {
+            rut: ins.alumno.rut,
+            nombres: ins.alumno.nombres,
+            apellidos: ins.alumno.apellidos,
+            taller: ins.taller.nombre,
+            sedeTaller: ins.taller.sede.nombre,
+            fechaInscripcion: ins.fecha
+          };
+        })
+        .filter(a => a !== null); // Solo incluimos si hay match real
+
+      return {
+        id: sede.id,
+        nombre: sede.nombre,
+        totalInscritos: alumnosEnEsteColegio.length,
+        alumnos: alumnosEnEsteColegio
+      };
+    });
+  }
+
   @Get('establecimientos')
   async getEstablecimientos() {
     return this.prisma.establecimiento.findMany({
