@@ -21,7 +21,6 @@ export class InscripcionesController {
     const idsMunicipales = [2, 3, 4, 5, 6, 7, 10];
     
     // 1. Obtenemos solo a los alumnos que REALMENTE tienen inscripciones activas
-    // Esto reduce drásticamente el conjunto de datos inicial comparado con toda la nómina SIGE
     const inscripciones = await this.prisma.inscripcion.findMany({
       include: {
         alumno: true,
@@ -37,7 +36,6 @@ export class InscripcionesController {
     ));
 
     // 3. Consultamos en SIGE por los alumnos inscritos QUE PERTENECEN a los 7 colegios
-    // Somos flexibles con los formatos (Limpio y Con Guion) para asegurar el match
     const nominaSigeMatch = await this.prisma.alumnoSige.findMany({
       where: {
         sedeId: { in: idsMunicipales },
@@ -82,6 +80,64 @@ export class InscripcionesController {
         alumnos: alumnosEnEsteColegio
       };
     });
+  }
+
+  @Get('lista-espera')
+  async getListaEspera() {
+    const espera = await this.prisma.listaEspera.findMany({
+      include: {
+        alumno: {
+          include: {
+            establecimiento: true
+          }
+        },
+        taller: {
+          include: {
+            sede: true
+          }
+        },
+        apoderado: true
+      },
+      orderBy: [
+        { tallerId: 'asc' },
+        { posicion: 'asc' }
+      ]
+    });
+
+    // Mapeamos para una respuesta premium y estructurada
+    return espera.map(item => ({
+      id: item.id,
+      posicion: item.posicion,
+      fechaSolicitud: item.fecha,
+      alumno: {
+        rut: item.alumno.rut,
+        nombres: item.alumno.nombres,
+        apellidos: item.alumno.apellidos,
+        establecimiento: item.alumno.establecimiento?.nombre || 'Particular'
+      },
+      taller: {
+        id: item.tallerId,
+        nombre: item.taller.nombre,
+        sede: item.taller.sede.nombre
+      },
+      apoderado: {
+        nombre: item.apoderado.nombre,
+        rut: item.apoderado.rut,
+        email: item.apoderado.email,
+        telefono: item.apoderado.telefono,
+        parentesco: item.parentesco || 'Apoderado'
+      },
+      salud: {
+        enfermedadCronica: item.enfermedadCronica,
+        enfermedadCronicaDetalle: item.enfermedadCronicaDetalle,
+        tratamientoMedico: item.tratamientoMedico,
+        alergias: item.alergias,
+        necesidadesEspeciales: item.necesidadesEspeciales,
+        necesidadesEspecialesDetalle: item.necesidadesEspecialesDetalle,
+        apoyoEscolar: item.apoyoEscolar,
+        usoImagen: item.usoImagen
+      }
+    }));
   }
 
   @Get('establecimientos')
