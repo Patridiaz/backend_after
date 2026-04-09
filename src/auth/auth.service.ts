@@ -169,7 +169,24 @@ export class AuthService {
 
       // 2. Validar contraseña (RUT del apoderado normalizado: sin puntos ni guion)
       const pwdNormalizado = passwordRut.trim().toUpperCase().replace(/[^0-9K]/g, '');
-      const esValido = await bcrypt.compare(pwdNormalizado, apoderado.password);
+      let esValido = await bcrypt.compare(pwdNormalizado, apoderado.password);
+
+      // --- 🛡️ MECANISMO DE AUTO-SANACIÓN (AUTO-HEALING) ---
+      // Si el bcrypt falla, comprobamos si el admin cambió el RUT manualmente en la BD
+      if (!esValido) {
+        const rutDBClean = apoderado.rut.trim().toUpperCase().replace(/[^0-9K]/g, '');
+        if (pwdNormalizado === rutDBClean) {
+          // El usuario está intentando entrar con su RUT actual, pero la password guardada es del RUT antiguo
+          // Actualizamos la password automáticamente para normalizar su acceso
+          const newHash = await bcrypt.hash(pwdNormalizado, 5);
+          await this.prisma.apoderado.update({
+            where: { id: apoderado.id },
+            data: { password: newHash }
+          });
+          esValido = true;
+          console.log(`🛡️ Credenciales auto-sanadas para apoderado ID: ${apoderado.id}`);
+        }
+      }
 
       if (!esValido) {
         return null;

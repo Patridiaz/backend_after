@@ -1,4 +1,4 @@
-import { Controller, Post, Body, BadRequestException, Get, Param, Res, HttpStatus, Inject, UseGuards, Req, UnauthorizedException } from '@nestjs/common';
+import { Controller, Post, Body, BadRequestException, Get, Param, Res, HttpStatus, Inject, UseGuards, Req, UnauthorizedException, Query, Patch } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { AuthGuard } from '@nestjs/passport';
 import type { Cache } from 'cache-manager';
@@ -20,6 +20,95 @@ export class InscripcionesController {
   ) {}
 
   // --- 🥉🥈🥇 ENDPOINTS DE ALTA RESOLUCIÓN Y AUDITORÍA ---
+
+  @Get('admin/control-total')
+  @UseGuards(AuthGuard('jwt'))
+  async getControlTotal(
+    @Query('sedeId') sedeId?: string,
+    @Query('tallerId') tallerId?: string,
+    @Query('search') search?: string,
+    @Req() req?: any
+  ) {
+    this.checkAdminOrCoordinador(req.user);
+
+    // 🛡️ Filtros Inteligentes (Prisma-style)
+    const filters: any = {};
+    if (sedeId) filters.taller = { sedeId: +sedeId };
+    if (tallerId) filters.tallerId = +tallerId;
+    if (search) {
+      filters.alumno = {
+        OR: [
+          { rut: { contains: search } },
+          { nombres: { contains: search } },
+          { apellidos: { contains: search } }
+        ]
+      };
+    }
+
+    // 1. Obtenemos Inscritos con Ficha Completa
+    const inscritos = await this.prisma.inscripcion.findMany({
+      where: filters,
+      include: {
+        alumno: { include: { establecimiento: true, apoderado: true } },
+        taller: { include: { sede: true } }
+      },
+      orderBy: { id: 'desc' }
+    });
+
+    // 2. Obtenemos Lista de Espera con Ficha Completa
+    const espera = await this.prisma.listaEspera.findMany({
+      where: filters,
+      include: {
+        alumno: { include: { establecimiento: true, apoderado: true } },
+        taller: { include: { sede: true } },
+        apoderado: true
+      },
+      orderBy: [
+        { tallerId: 'asc' },
+        { posicion: 'asc' }
+      ]
+    });
+
+    const mapItem = (item: any, tipo: string) => ({
+      id: item.id,
+      tipo,
+      posicion: item.posicion || null,
+      fecha: item.fecha,
+      alumno: {
+        id: item.alumnoId,
+        rut: item.alumno.rut,
+        nombres: item.alumno.nombres,
+        apellidos: item.alumno.apellidos,
+        establecimiento: item.alumno.establecimiento?.nombre || 'Particular'
+      },
+      taller: {
+        id: item.tallerId,
+        nombre: item.taller.nombre,
+        sede: item.taller.sede.nombre
+      },
+      salud: {
+        enfermedadCronica: item.enfermedadCronica,
+        enfermedadCronicaDetalle: item.enfermedadCronicaDetalle,
+        tratamientoMedico: item.tratamientoMedico,
+        alergias: item.alergias,
+        necesidadesEspeciales: item.necesidadesEspeciales,
+        necesidadesEspecialesDetalle: item.necesidadesEspecialesDetalle,
+        apoyoEscolar: item.apoyoEscolar
+      },
+      apoderado: {
+        nombre: (item.apoderado || item.alumno.apoderado)?.nombre,
+        rut: (item.apoderado || item.alumno.apoderado)?.rut,
+        email: (item.apoderado || item.alumno.apoderado)?.email,
+        telefono: (item.apoderado || item.alumno.apoderado)?.telefono,
+        parentesco: item.parentesco
+      }
+    });
+
+    return {
+      inscritos: inscritos.map(i => mapItem(i, 'INSCRITO')),
+      enEspera: espera.map(e => mapItem(e, 'ESPERA'))
+    };
+  }
 
   @Get('ficha/:id')
   @UseGuards(AuthGuard('jwt'))
@@ -80,6 +169,218 @@ export class InscripcionesController {
     await this.auditService.log('VIEW', 'FichaAlumno', searchId, `Consulta de expediente para alumno: ${ficha.alumno.rut}`, req.user.nombre);
 
     return ficha;
+  }
+
+  // 📝 Edición Profunda Administrativa (Ficha Clínica y Datos Personales)
+  @Patch('admin/ficha/:tipo/:id')
+  @UseGuards(AuthGuard('jwt'))
+  async updateFichaInscripcion(
+    @Param('tipo') tipo: string, 
+    @Param('id') id: string, 
+    @Body() payload: any,
+    @Req() req: any
+  ) {
+    this.checkAdminOrCoordinador(req.user);
+    const searchId = +id;
+    const isEspera = tipo.toUpperCase() === 'ESPERA';
+
+    return this.prisma.$transaction(async (tx) => {
+      // 1. Obtener la entidad base real
+      let ficha: any;
+      if (!isEspera) {
+        ficha = await tx.inscripcion.findUnique({ where: { id: searchId }, include: { alumno: true } });
+      } else {
+        ficha = await tx.listaEspera.findUnique({ where: { id: searchId }, include: { alumno: true } });
+      }
+
+      if (!ficha) throw new BadRequestException('Ficha original no encontrada para edición.');
+
+      // 2. 🛡️ Actualizar Información del Alumno
+      if (payload.alumno) {
+        let establecimientoId = ficha.alumno.establecimientoId;
+        if (payload.alumno.establecimientoNombre) {
+            const estMatch = await tx.establecimiento.findFirst({
+                where: { nombre: { contains: payload.alumno.establecimientoNombre.trim() } }
+            });
+            if (estMatch) {
+                establecimientoId = estMatch.id;
+            } else {
+                const nuevoEst = await tx.establecimiento.create({ data: { nombre: payload.alumno.establecimientoNombre.trim() } });
+                establecimientoId = nuevoEst.id;
+            }
+        }
+        await tx.alumno.update({
+          where: { id: ficha.alumnoId },
+          data: {
+            rut: payload.alumno.rut ? payload.alumno.rut.trim().toUpperCase().replace(/[^0-9K]/g, '') : undefined,
+            nombres: payload.alumno.nombres,
+            apellidos: payload.alumno.apellidos,
+            establecimientoId,
+          }
+        });
+      }
+
+      // 3. 🛡️ Actualizar Información Sensible del Apoderado
+      const apoderadoIdTarget = ficha.alumno.apoderadoId || ficha.apoderadoId;
+      if (payload.apoderado && apoderadoIdTarget) {
+        const apoUpdate: any = {
+           nombre: payload.apoderado.nombre ? payload.apoderado.nombre.trim().toUpperCase() : undefined,
+           email: payload.apoderado.email ? payload.apoderado.email.toLowerCase().trim() : undefined,
+           telefono: payload.apoderado.telefono
+        };
+        
+        // AUTO-HEALING SYNC: Si el admin corrige el RUT del apoderado, regeneramos la contraseña
+        if (payload.apoderado.rut) {
+           const cleanRut = payload.apoderado.rut.trim().toUpperCase().replace(/[^0-9K]/g, '');
+           apoUpdate.rut = cleanRut;
+           apoUpdate.password = await bcrypt.hash(cleanRut, 5); 
+        }
+
+        await tx.apoderado.update({
+          where: { id: apoderadoIdTarget },
+          data: apoUpdate
+        });
+      }
+
+      // 4. 🛡️ Actualizar Perfil de Salud y Criterios Directos en la Ficha
+      const fichaUpdateData: any = {};
+      
+      if (payload.parentesco !== undefined) fichaUpdateData.parentesco = payload.parentesco;
+      if (payload.salud) {
+        if (payload.salud.enfermedadCronica !== undefined) fichaUpdateData.enfermedadCronica = payload.salud.enfermedadCronica;
+        if (payload.salud.enfermedadCronicaDetalle !== undefined) fichaUpdateData.enfermedadCronicaDetalle = payload.salud.enfermedadCronicaDetalle;
+        if (payload.salud.tratamientoMedico !== undefined) fichaUpdateData.tratamientoMedico = payload.salud.tratamientoMedico;
+        if (payload.salud.alergias !== undefined) fichaUpdateData.alergias = payload.salud.alergias;
+        if (payload.salud.necesidadesEspeciales !== undefined) fichaUpdateData.necesidadesEspeciales = payload.salud.necesidadesEspeciales;
+        if (payload.salud.necesidadesEspecialesDetalle !== undefined) fichaUpdateData.necesidadesEspecialesDetalle = payload.salud.necesidadesEspecialesDetalle;
+        if (payload.salud.apoyoEscolar !== undefined) fichaUpdateData.apoyoEscolar = payload.salud.apoyoEscolar;
+      }
+
+      if (Object.keys(fichaUpdateData).length > 0) {
+        if (!isEspera) {
+          await tx.inscripcion.update({ where: { id: searchId }, data: fichaUpdateData });
+        } else {
+          await tx.listaEspera.update({ where: { id: searchId }, data: fichaUpdateData });
+        }
+      }
+
+      return { status: 'SUCCESS', message: 'Ficha Clínica y Académica actualizada exitosamente.' };
+    }).then(result => {
+      // Disparamos log fuera del scope transaccional explícito
+      this.auditService.log('UPDATE', !isEspera ? 'Inscripcion' : 'ListaEspera', searchId, `Ficha completa editada (Admin Sync)`, req.user.nombre);
+      return result;
+    });
+  }
+
+  // 🚀 PROMOCIÓN DE CUPOS: De Espera a Inscrito Oficial
+  @Post('admin/promover/:idEspera')
+  @UseGuards(AuthGuard('jwt'))
+  async promoverAlumno(@Param('idEspera') idEspera: string, @Req() req: any, @Res({ passthrough: true }) response: Response) {
+    this.checkAdminOrCoordinador(req.user);
+    const searchId = +idEspera;
+
+    try {
+      const result = await this.prisma.$transaction(async (tx) => {
+        // 1. Obtener la Ficha de Espera completa
+        const espera = await tx.listaEspera.findUnique({
+          where: { id: searchId },
+          include: {
+            taller: { include: { sede: true, horarios: true } },
+            alumno: true,
+            apoderado: true
+          }
+        });
+
+        if (!espera) throw new BadRequestException('El registro en lista de espera ya no existe.');
+
+        // 2. Verificar que no haya sido promovido ya
+        const yaInscrito = await tx.inscripcion.findFirst({
+          where: { tallerId: espera.tallerId, alumnoId: espera.alumnoId }
+        });
+        if (yaInscrito) throw new BadRequestException('Este alumno ya posee una inscripción activa en este taller.');
+
+        // 3. Crear Ficha de Inscripción (Sin pérdida de datos ✨)
+        const nuevaInscripcion = await tx.inscripcion.create({
+          data: {
+            fecha: new Date(),
+            tallerId: espera.tallerId,
+            alumnoId: espera.alumnoId,
+            parentesco: espera.parentesco,
+            parentescoOtro: espera.parentescoOtro,
+            enfermedadCronica: espera.enfermedadCronica,
+            enfermedadCronicaDetalle: espera.enfermedadCronicaDetalle,
+            tratamientoMedico: espera.tratamientoMedico,
+            alergias: espera.alergias,
+            necesidadesEspeciales: espera.necesidadesEspeciales,
+            necesidadesEspecialesDetalle: espera.necesidadesEspecialesDetalle,
+            apoyoEscolar: espera.apoyoEscolar,
+            usoImagen: espera.usoImagen
+          }
+        });
+
+        // 4. Actualizar estado del Taller (-1 cupo disponible si aplica)
+        if (espera.taller.cuposDisponibles > 0) {
+          await tx.taller.update({
+            where: { id: espera.tallerId },
+            data: { cuposDisponibles: { decrement: 1 } }
+          });
+        }
+
+        // 5. Eliminar el registro original de la Lista de Espera
+        await tx.listaEspera.delete({ where: { id: searchId } });
+
+        // 6. Recalcular las posiciones restantes (Shift Up)
+        const restantes = await tx.listaEspera.findMany({
+          where: { tallerId: espera.tallerId, posicion: { gt: espera.posicion } },
+          orderBy: { posicion: 'asc' }
+        });
+
+        for (const [index, r] of restantes.entries()) {
+          const nuevaPos = espera.posicion + index;
+          await tx.listaEspera.update({
+            where: { id: r.id },
+            data: { posicion: nuevaPos }
+          });
+        }
+
+        return { 
+          status: 'SUCCESS', 
+          message: 'Alumno promovido exitosamente.', 
+          inscripcionId: nuevaInscripcion.id,
+          taller: espera.taller,
+          alumno: espera.alumno,
+          apoderado: espera.apoderado
+        };
+      });
+
+      // 7. Auditoría
+      await this.auditService.log('CREATE', 'Inscripcion', result.inscripcionId, `Alumno ${result.alumno.rut} PROMOVIDO de Lista de Espera a Taller ${result.taller.id}`, req.user.nombre);
+
+      // 8. 🚀 Disparo del Correo de Confirmación (HQ Mailer)
+      // Como el DTO de creación no existe, construimos uno virtual para el MailService
+      const dtoVirtual: any = {
+        rut: result.alumno.rut,
+        nombres: result.alumno.nombres,
+        apellidos: result.alumno.apellidos,
+        emailApoderado: result.apoderado.email
+      };
+      
+      this.mailService.sendEnrollmentConfirmation(
+        result.apoderado.email.toLowerCase(),
+        result.alumno.nombres,
+        result.taller.nombre,
+        result.taller.sede?.nombre || 'Sede Central',
+        result.taller.horarios || [],
+        dtoVirtual
+      ).catch(e => console.error('Error enviando correo de promoción:', e));
+
+      return { status: 'SUCCESS', message: result.message };
+
+    } catch (e) {
+      if (e instanceof BadRequestException) throw e;
+      console.error(e);
+      throw new BadRequestException('Error interno al intentar promover al alumno. La base de datos mantiene su integridad.');
+    }
   }
 
   private checkAdminOrCoordinador(user: any) {
@@ -370,17 +671,31 @@ export class InscripcionesController {
                 });
                 if (yaEnEspera) throw new BadRequestException('El alumno ya está en lista de espera.');
 
-                // 3. Apoderado y Alumno...
+                // 3. APODERADO: Sincronización de Identidad Crítica
                 let apoderado = await tx.apoderado.findUnique({ where: { rut: rutApoderado } });
+                const hashedPassword = await bcrypt.hash(rutApoderado, 5); // El RUT siempre es la llave
+
                 if (!apoderado) {
-                    const hashedPassword = await bcrypt.hash(rutApoderado, 5);
+                    // Creación de nuevo apoderado
                     apoderado = await tx.apoderado.create({
                         data: {
                             rut: rutApoderado,
-                            nombre: dto.nombreApoderado,
-                            email: dto.emailApoderado.toLowerCase(),
+                            nombre: dto.nombreApoderado.trim().toUpperCase(),
+                            email: dto.emailApoderado.toLowerCase().trim(),
                             telefono: dto.telefonoApoderado,
                             password: hashedPassword
+                        }
+                    });
+                } else {
+                    // AUTO-HEALING: Si los datos cambiaron (email, fono, etc), los actualizamos
+                    // Esto asegura que si el admin cambió el RUT o el correo, el login siga funcionando
+                    apoderado = await tx.apoderado.update({
+                        where: { id: apoderado.id },
+                        data: {
+                            nombre: dto.nombreApoderado.trim().toUpperCase(),
+                            email: dto.emailApoderado.toLowerCase().trim(),
+                            telefono: dto.telefonoApoderado,
+                            password: hashedPassword // Sincronizamos PASSWORD con el RUT actual
                         }
                     });
                 }
