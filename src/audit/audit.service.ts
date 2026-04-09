@@ -15,8 +15,13 @@ export class AuditService {
    */
   async log(accion: string, tabla: string, registroId?: number, detalle?: string, usuario?: string) {
     try {
+      // Ajuste explícito de Zona Horaria (UTC-4 Chile Continental)
+      const chileTime = new Date();
+      chileTime.setHours(chileTime.getHours() - 4);
+
       await this.prisma.logCambio.create({
         data: {
+          fecha: chileTime,
           accion,
           tabla,
           registroId,
