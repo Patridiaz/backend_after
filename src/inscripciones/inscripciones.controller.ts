@@ -267,7 +267,8 @@ export class InscripcionesController {
       return { status: 'SUCCESS', message: 'Ficha Clínica y Académica actualizada exitosamente.' };
     }).then(result => {
       // Disparamos log fuera del scope transaccional explícito
-      this.auditService.log('UPDATE', !isEspera ? 'Inscripcion' : 'ListaEspera', searchId, `Ficha completa editada (Admin Sync)`, req.user.nombre);
+      const detalleCompleto = `Ficha editada. Datos: ${JSON.stringify(payload)}`;
+      this.auditService.log('UPDATE', !isEspera ? 'Inscripcion' : 'ListaEspera', searchId, detalleCompleto, req.user.nombre);
       return result;
     });
   }
