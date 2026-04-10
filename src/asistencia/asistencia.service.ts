@@ -34,9 +34,10 @@ export class AsistenciaService {
       const autorId = usuarioId || dto.profesorId; // Prioridad al usuario logueado
 
       for (const item of dto.cambios) {
-        const fechaDate = new Date(item.fecha);
-        // Ajustamos la fecha para que sea a medianoche (Date Only)
-        fechaDate.setHours(0, 0, 0, 0);
+        // ✅ Parsear por partes para evitar desfase UTC (new Date("YYYY-MM-DD") = UTC midnight
+        //    y setHours opera en hora local, retrocediendo el día en UTC-4)
+        const [y, m, d] = item.fecha.split('T')[0].split('-').map(Number);
+        const fechaDate = new Date(y, m - 1, d, 0, 0, 0, 0); // Medianoche HORA LOCAL
 
         const registro = await tx.asistencia.upsert({
           where: {
@@ -80,8 +81,10 @@ export class AsistenciaService {
 
   // Guardar o Actualizar Asistencia Masiva
   async registrarAsistencia(dto: TomarAsistenciaDto, usuarioId?: number) {
-    const fechaDate = new Date(dto.fecha);
-    fechaDate.setHours(0, 0, 0, 0);
+    // ✅ Parsear por partes para evitar desfase UTC (new Date("YYYY-MM-DD") = UTC midnight
+    //    y setHours opera en hora local, retrocediendo el día en UTC-4 Chile)
+    const [y, m, d] = dto.fecha.split('T')[0].split('-').map(Number);
+    const fechaDate = new Date(y, m - 1, d, 0, 0, 0, 0); // Medianoche HORA LOCAL
     const autorId = usuarioId || dto.profesorId;
 
     return await this.prisma.$transaction(async (tx) => {

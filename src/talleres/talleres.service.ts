@@ -332,10 +332,58 @@ export class TalleresService {
   }
 
   /**
+   * Todos los talleres del sistema con % asistencia (para ADMIN/COORDINADOR sin sede)
+   */
+  async getAllTalleresConAsistencia() {
+    const talleres = await this.prisma.taller.findMany({
+      include: {
+        sede: true,
+        horarios: true,
+        profesores: {
+          include: {
+            usuario: { select: { id: true, nombre: true, email: true, rol: true } }
+          }
+        },
+        _count: {
+          select: { inscripciones: true, asistencias: true }
+        }
+      },
+      orderBy: [{ sede: { nombre: 'asc' } }, { nombre: 'asc' }]
+    });
+
+    if (talleres.length === 0) return [];
+
+    const conteosPorTaller = await this.prisma.asistencia.groupBy({
+      by: ['tallerId', 'estado'],
+      _count: { estado: true }
+    });
+
+    const mapaConteos: Record<number, { P: number; A: number; J: number }> = {};
+    for (const row of conteosPorTaller) {
+      if (!mapaConteos[row.tallerId]) mapaConteos[row.tallerId] = { P: 0, A: 0, J: 0 };
+      const e = row.estado as 'P' | 'A' | 'J';
+      if (e === 'P' || e === 'A' || e === 'J') {
+        mapaConteos[row.tallerId][e] = row._count.estado;
+      }
+    }
+
+    return talleres.map(t => {
+      const c = mapaConteos[t.id] ?? { P: 0, A: 0, J: 0 };
+      const totalRegistros = c.P + c.A + c.J;
+      const asistenciaPromedio = totalRegistros > 0
+        ? Math.round((c.P / totalRegistros) * 100)
+        : 0;
+
+      return { ...t, asistenciaPromedio, _stats: { presentes: c.P, ausentes: c.A, justificados: c.J, total: totalRegistros } };
+    });
+  }
+
+  /**
    * Talleres de una SEDE específica (para ENCARGADO_ESCUELA)
+   * Incluye porcentaje de asistencia real calculado desde los registros.
    */
   async findBySede(sedeId: number) {
-    return this.prisma.taller.findMany({
+    const talleres = await this.prisma.taller.findMany({
       where: { sedeId },
       include: {
         sede: true,
@@ -350,6 +398,42 @@ export class TalleresService {
         }
       },
       orderBy: { nombre: 'asc' }
+    });
+
+    if (talleres.length === 0) return [];
+
+    // Obtener conteos de P/A/J por taller en una sola consulta
+    const tallerIds = talleres.map(t => t.id);
+
+    const conteosPorTaller = await this.prisma.asistencia.groupBy({
+      by: ['tallerId', 'estado'],
+      where: { tallerId: { in: tallerIds } },
+      _count: { estado: true }
+    });
+
+    // Mapear conteos → { tallerId: { P: n, A: n, J: n } }
+    const mapaConteos: Record<number, { P: number; A: number; J: number }> = {};
+    for (const row of conteosPorTaller) {
+      if (!mapaConteos[row.tallerId]) mapaConteos[row.tallerId] = { P: 0, A: 0, J: 0 };
+      const e = row.estado as 'P' | 'A' | 'J';
+      if (e === 'P' || e === 'A' || e === 'J') {
+        mapaConteos[row.tallerId][e] = row._count.estado;
+      }
+    }
+
+    // Inyectar asistenciaPromedio en cada taller
+    return talleres.map(t => {
+      const c = mapaConteos[t.id] ?? { P: 0, A: 0, J: 0 };
+      const totalRegistros = c.P + c.A + c.J;
+      const asistenciaPromedio = totalRegistros > 0
+        ? Math.round((c.P / totalRegistros) * 100)
+        : 0;
+
+      return {
+        ...t,
+        asistenciaPromedio,
+        _stats: { presentes: c.P, ausentes: c.A, justificados: c.J, total: totalRegistros }
+      };
     });
   }
 

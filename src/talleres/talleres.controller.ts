@@ -117,18 +117,25 @@ export class TalleresController {
   }
 
 
-  // RUTA PARA ENCARGADO_ESCUELA: Talleres de su sede
+  // RUTA PARA ENCARGADO_ESCUELA / ADMIN: Talleres de su sede (o TODOS si es Admin)
   @UseGuards(AuthGuard('jwt'))
   @Get('mis-talleres-encargado')
   async getMisTalleresEncargado(@Req() req: any) {
     const user = req.user;
     const esEncargado = user.roles?.some((r: string) => r.toUpperCase() === 'ENCARGADO_ESCUELA');
-    const esAdmin = user.roles?.some((r: string) => r.toUpperCase() === 'ADMIN');
+    const esAdmin     = user.roles?.some((r: string) => r.toUpperCase() === 'ADMIN');
+    const esCoord     = user.roles?.some((r: string) => r.toUpperCase() === 'COORDINADOR');
 
-    if (!esEncargado && !esAdmin) {
-      throw new UnauthorizedException('Acceso denegado. Solo para Encargados de Escuela.');
+    if (!esEncargado && !esAdmin && !esCoord) {
+      throw new UnauthorizedException('Acceso denegado. Solo para Encargados o Administradores.');
     }
 
+    // ADMIN / COORDINADOR sin sede asignada → devuelve TODOS los talleres
+    if ((esAdmin || esCoord) && !user.sedeId) {
+      return this.talleresService.getAllTalleresConAsistencia();
+    }
+
+    // Encargado con sede asignada → solo sus talleres
     if (!user.sedeId) {
       throw new UnauthorizedException('No tienes una sede asignada. Contacta al Administrador.');
     }
@@ -314,5 +321,109 @@ export class TalleresController {
 
     const tallerId = parseInt(id);
     return this.talleresService.getAlumnosPorTaller(tallerId);
+  }
+
+  // --- 📅 ASISTENCIA DIARIA (NUEVO HUB) ---
+
+  @UseGuards(AuthGuard('jwt'))
+  @Get('admin/asistencia/:tallerId/:fecha')
+  async getAsistenciaDia(
+    @Param('tallerId') tallerId: string, 
+    @Param('fecha') fecha: string, 
+    @Req() req: any
+  ) {
+    this.checkAdminOrCoordinadorOrEncargado(req.user);
+
+    // Parseamos la fecha (YYYY-MM-DD) y construimos los límites del día
+    const dateStart = new Date(`${fecha}T00:00:00.000Z`);
+    const dateEnd = new Date(`${fecha}T23:59:59.999Z`);
+
+    // 1. Obtenemos a todos los alumnos inscritos Oficialmente en ese taller
+    const inscripciones = await this.talleresService['prisma'].inscripcion.findMany({
+      where: { tallerId: +tallerId },
+      include: {
+        alumno: { include: { establecimiento: true, apoderado: true } }
+      },
+      orderBy: { alumno: { apellidos: 'asc' } }
+    });
+
+    // 2. Buscamos si ya existe asistencia registrada para ese día
+    const asistenciasGuardadas = await this.talleresService['prisma'].asistencia.findMany({
+      where: {
+        tallerId: +tallerId,
+        fecha: {
+          gte: dateStart,
+          lte: dateEnd
+        }
+      }
+    });
+
+    // 3. Mezclamos ambas fuentes para entregar el listado maestro al Frontend
+    return inscripciones.map(ins => {
+      const registroPrevio = asistenciasGuardadas.find(a => a.alumnoId === ins.alumnoId);
+      return {
+        alumnoId: ins.alumnoId,
+        rut: ins.alumno.rut,
+        nombres: ins.alumno.nombres,
+        apellidos: ins.alumno.apellidos,
+        estado: registroPrevio ? registroPrevio.estado : null, // null = No ingresado aún
+        enfermedadCronica: ins.enfermedadCronica,
+        apoderadoTelefono: (ins.alumno.apoderado || (ins as any).apoderado)?.telefono || ''
+      };
+    });
+  }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('admin/asistencia/:tallerId/:fecha')
+  async guardarAsistenciaDia(
+    @Param('tallerId') tallerId: string, 
+    @Param('fecha') fecha: string, 
+    @Body() payload: { asistencias: { alumnoId: number, estado: string }[] },
+    @Req() req: any
+  ) {
+    this.checkAdminOrCoordinadorOrEncargado(req.user);
+
+    const dateTarget = new Date(`${fecha}T12:00:00.000Z`); // Mediodía para evitar fallos de UTC
+    const adminId = parseInt(req.user.sub);
+
+    return this.talleresService['prisma'].$transaction(async (tx) => {
+      // Borramos la asistencia de ese día para ese taller (Upsert masivo por simplicidad)
+      const dateStart = new Date(`${fecha}T00:00:00.000Z`);
+      const dateEnd = new Date(`${fecha}T23:59:59.999Z`);
+      
+      await tx.asistencia.deleteMany({
+        where: {
+          tallerId: +tallerId,
+          fecha: { gte: dateStart, lte: dateEnd }
+        }
+      });
+
+      // Insertamos el nuevo set completo
+      if (payload.asistencias && payload.asistencias.length > 0) {
+        await tx.asistencia.createMany({
+          data: payload.asistencias.map(a => ({
+            tallerId: +tallerId,
+            alumnoId: a.alumnoId,
+            fecha: dateTarget,
+            estado: a.estado,
+            registradoPor: adminId
+          }))
+        });
+      }
+
+      await this.auditService.log('CREATE', 'Asistencia', +tallerId, `Asistencia masiva guardada. Fecha: ${fecha}`, req.user.nombre);
+
+      return { status: 'SUCCESS', message: 'Registro de asistencia guardado exitosamente.' };
+    });
+  }
+
+  private checkAdminOrCoordinadorOrEncargado(user: any) {
+    const roles: string[] = user.roles || [];
+    const hasRole = roles.some((r: string) => 
+      ['ADMIN', 'COORDINADOR', 'ENCARGADO_ESCUELA', 'PROFESOR'].includes(r.toUpperCase())
+    );
+    if (!hasRole) {
+      throw new UnauthorizedException('Acceso denegado. Rol insuficiente para registrar asistencia.');
+    }
   }
 }
