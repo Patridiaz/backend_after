@@ -371,7 +371,7 @@ export class TalleresService {
       const c = mapaConteos[t.id] ?? { P: 0, A: 0, J: 0 };
       const totalRegistros = c.P + c.A + c.J;
       const asistenciaPromedio = totalRegistros > 0
-        ? Math.round((c.P / totalRegistros) * 100)
+        ? Math.round(((c.P + c.J) / totalRegistros) * 100)
         : 0;
 
       return { ...t, asistenciaPromedio, _stats: { presentes: c.P, ausentes: c.A, justificados: c.J, total: totalRegistros } };
@@ -426,7 +426,7 @@ export class TalleresService {
       const c = mapaConteos[t.id] ?? { P: 0, A: 0, J: 0 };
       const totalRegistros = c.P + c.A + c.J;
       const asistenciaPromedio = totalRegistros > 0
-        ? Math.round((c.P / totalRegistros) * 100)
+        ? Math.round(((c.P + c.J) / totalRegistros) * 100)
         : 0;
 
       return {
@@ -647,8 +647,10 @@ export class TalleresService {
     const ranking = alumnos.map(alumno => {
       const totalSesiones = alumno.asistencias.length;
       const presentes = alumno.asistencias.filter(a => a.estado === 'P').length;
+      const justificados = alumno.asistencias.filter(a => a.estado === 'J').length;
+      const ausentes = alumno.asistencias.filter(a => a.estado === 'A').length;
       const porcentaje = totalSesiones > 0 
-        ? Math.round((presentes / totalSesiones) * 100) 
+        ? Math.round(((presentes + justificados) / totalSesiones) * 100) 
         : 0;
 
       return {
@@ -659,7 +661,8 @@ export class TalleresService {
         establecimiento: alumno.establecimiento?.nombre || 'Sin asignación',
         totalSesiones,
         presentes,
-        ausentes: totalSesiones - presentes,
+        justificados,
+        ausentes,
         porcentaje,
         talleresInscritos: alumno._count.inscripciones
       };
@@ -720,9 +723,10 @@ export class TalleresService {
     // 4. Enriquecer cada alumno con su % de asistencia real
     const alumnos = inscripciones.map(ins => {
       const presentes = ins.alumno.asistencias.filter(a => a.estado === 'P').length;
+      const justificados = ins.alumno.asistencias.filter(a => a.estado === 'J').length;
       const ausentes  = ins.alumno.asistencias.filter(a => a.estado === 'A').length;
       const porcentaje = sesionesEsperadas > 0
-        ? Math.round((presentes / sesionesEsperadas) * 100)
+        ? Math.round(((presentes + justificados) / sesionesEsperadas) * 100)
         : null;
 
       return {
@@ -732,7 +736,19 @@ export class TalleresService {
         sesionesRegistradas: ins.alumno.asistencias.length,
         sesionesEsperadas,
         porcentaje,
-        alerta: ins.alumno.asistencias.length < sesionesEsperadas, // hubo clases sin registro
+        alerta: ins.alumno.asistencias.length < sesionesEsperadas,
+        // Datos de salud y consentimientos de la inscripción
+        fichaInscripcion: {
+          enfermedadCronica: ins.enfermedadCronica,
+          enfermedadCronicaDetalle: ins.enfermedadCronicaDetalle,
+          tratamientoMedico: ins.tratamientoMedico,
+          alergias: ins.alergias,
+          necesidadesEspeciales: ins.necesidadesEspeciales,
+          necesidadesEspecialesDetalle: ins.necesidadesEspecialesDetalle,
+          apoyoEscolar: ins.apoyoEscolar,
+          usoImagen: ins.usoImagen,
+          parentesco: ins.parentesco
+        }
       };
     });
 
