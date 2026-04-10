@@ -384,6 +384,92 @@ export class InscripcionesController {
     }
   }
 
+  // 📧 REENVÍO MANUAL DE CORREO OFICIAL (Seguro contra fallos técnicos o errores de digitación de los padres)
+  @Post('admin/reenviar-correo/:tipo/:id')
+  @UseGuards(AuthGuard('jwt'))
+  async reenviarCorreoManual(
+    @Param('tipo') tipo: string, 
+    @Param('id') id: string, 
+    @Req() req: any
+  ) {
+    this.checkAdminOrCoordinador(req.user);
+    const searchId = +id;
+    const isEspera = tipo.toUpperCase() === 'ESPERA';
+
+    let ficha: any;
+    if (!isEspera) {
+      ficha = await this.prisma.inscripcion.findUnique({
+        where: { id: searchId },
+        include: {
+          alumno: { include: { apoderado: true } },
+          taller: { include: { sede: true, horarios: true } }
+        }
+      });
+    } else {
+      ficha = await this.prisma.listaEspera.findUnique({
+        where: { id: searchId },
+        include: {
+          alumno: { include: { apoderado: true } },
+          taller: { include: { sede: true, horarios: true } },
+          apoderado: true
+        }
+      });
+    }
+
+    if (!ficha) throw new BadRequestException('Ficha no encontrada. No se puede enviar el correo.');
+
+    // En ListaEspera, el apoderado puede venir directo de la ficha o heredado del alumno
+    const apoderadoTarget = isEspera ? (ficha.apoderado || ficha.alumno.apoderado) : ficha.alumno.apoderado;
+    if (!apoderadoTarget || !apoderadoTarget.email) {
+      throw new BadRequestException('El alumno no tiene un apoderado asociado con un correo electrónico válido.');
+    }
+
+    const emailTo = apoderadoTarget.email.toLowerCase().trim();
+
+    // Reconstruimos el objeto de salud y autorizaciones para la plantilla del correo
+    const datosSalud = {
+      enfermedadCronica: ficha.enfermedadCronica,
+      enfermedadCronicaDetalle: ficha.enfermedadCronicaDetalle,
+      alergias: ficha.alergias,
+      necesidadesEspeciales: ficha.necesidadesEspeciales,
+      necesidadesEspecialesDetalle: ficha.necesidadesEspecialesDetalle,
+      apoyoEscolar: ficha.apoyoEscolar,
+      usoImagen: ficha.usoImagen
+    };
+
+    try {
+      let enviadoOk = false;
+      if (!isEspera) {
+        enviadoOk = await this.mailService.sendEnrollmentConfirmation(
+          emailTo,
+          ficha.alumno.nombres,
+          ficha.taller.nombre,
+          ficha.taller.sede?.nombre || 'Sede Central',
+          ficha.taller.horarios || [],
+          datosSalud
+        );
+      } else {
+        enviadoOk = await this.mailService.sendWaitListConfirmation(
+          emailTo,
+          ficha.alumno.nombres,
+          ficha.taller.nombre,
+          ficha.taller.sede?.nombre || 'Sede Central',
+          ficha.taller.horarios || [],
+          datosSalud
+        );
+      }
+
+      if (!enviadoOk) throw new Error('Mail provider rejected the dispatch.');
+
+      await this.auditService.log('UPDATE', !isEspera ? 'Inscripcion' : 'ListaEspera', searchId, `Reenvío manual de correo a ${emailTo}`, req.user.nombre);
+      
+      return { status: 'SUCCESS', message: `Correo oficial reenviado exitosamente a ${emailTo}` };
+    } catch (e) {
+      console.error('Fallo en el reenvío manual de correo:', e);
+      throw new BadRequestException('El servidor de correos no pudo procesar la solicitud en este momento.');
+    }
+  }
+
   private checkAdminOrCoordinador(user: any) {
     const roles: string[] = user.roles || [];
     const hasRole = roles.some((r: string) => 
