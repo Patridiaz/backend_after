@@ -305,7 +305,7 @@ export class TalleresService {
    * Talleres asignados a un PROFESOR (su carga académica)
    */
   async findByProfesor(profesorId: number) {
-    return this.prisma.taller.findMany({
+    const talleres = await this.prisma.taller.findMany({
       where: {
         profesores: {
           some: {
@@ -328,6 +328,39 @@ export class TalleresService {
           }
         }
       }
+    });
+
+    if (talleres.length === 0) return [];
+
+    const tallerIds = talleres.map(t => t.id);
+
+    const conteosPorTaller = await this.prisma.asistencia.groupBy({
+      by: ['tallerId', 'estado'],
+      where: { tallerId: { in: tallerIds } },
+      _count: { estado: true }
+    });
+
+    const mapaConteos: Record<number, { P: number; A: number; J: number }> = {};
+    for (const row of conteosPorTaller) {
+      if (!mapaConteos[row.tallerId]) mapaConteos[row.tallerId] = { P: 0, A: 0, J: 0 };
+      const e = row.estado as 'P' | 'A' | 'J';
+      if (e === 'P' || e === 'A' || e === 'J') {
+        mapaConteos[row.tallerId][e] = row._count.estado;
+      }
+    }
+
+    return talleres.map(t => {
+      const c = mapaConteos[t.id] ?? { P: 0, A: 0, J: 0 };
+      const totalRegistros = c.P + c.A + c.J;
+      const asistenciaPromedio = totalRegistros > 0
+        ? Math.round(((c.P + c.J) / totalRegistros) * 100)
+        : 0;
+
+      return {
+        ...t,
+        asistenciaPromedio,
+        _stats: { presentes: c.P, ausentes: c.A, justificados: c.J, total: totalRegistros }
+      };
     });
   }
 
@@ -621,8 +654,76 @@ export class TalleresService {
   }
 
   /**
-   * Ranking de asistencia por alumno (Auditado para ADMIN/COORD)
+   * Ranking de asistencia por alumno de un profesor específico
    */
+  async getRankingAsistenciaProfesor(profesorId: number, limit: number = 3) {
+    const alumnos = await this.prisma.alumno.findMany({
+      where: {
+        inscripciones: {
+          some: {
+            taller: {
+              profesores: {
+                some: {
+                  usuarioId: profesorId
+                }
+              }
+            }
+          }
+        }
+      },
+      select: {
+        id: true,
+        rut: true,
+        nombres: true,
+        apellidos: true,
+        curso: true,
+        establecimiento: { select: { nombre: true } },
+        _count: {
+          select: {
+            inscripciones: true
+          }
+        },
+        asistencias: {
+          where: {
+            taller: {
+              profesores: {
+                some: { usuarioId: profesorId }
+              }
+            }
+          },
+          select: { estado: true }
+        }
+      }
+    });
+
+    const ranking = alumnos.map(alumno => {
+      const totalSesiones = alumno.asistencias.length;
+      const presentes = alumno.asistencias.filter(a => a.estado === 'P').length;
+      const justificados = alumno.asistencias.filter(a => a.estado === 'J').length;
+      const ausentes = alumno.asistencias.filter(a => a.estado === 'A').length;
+      const porcentaje = totalSesiones > 0 
+        ? Math.round(((presentes + justificados) / totalSesiones) * 100) 
+        : 0;
+
+      return {
+        id: alumno.id,
+        rut: alumno.rut,
+        nombre: `${alumno.nombres} ${alumno.apellidos}`,
+        curso: alumno.curso,
+        establecimiento: alumno.establecimiento?.nombre || 'Sin asignación',
+        totalSesiones,
+        presentes,
+        justificados,
+        ausentes,
+        porcentaje,
+        talleresInscritos: alumno._count.inscripciones
+      };
+    }).filter(a => a.totalSesiones > 0); // Solo alumnos que al menos han sido registrados una vez
+
+    return ranking
+      .sort((a, b) => b.porcentaje - a.porcentaje || b.totalSesiones - a.totalSesiones)
+      .slice(0, limit);
+  }
   async getRankingAsistencia(limit: number = 50) {
     const alumnos = await this.prisma.alumno.findMany({
       select: {

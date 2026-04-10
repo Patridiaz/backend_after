@@ -286,6 +286,20 @@ export class TalleresController {
     return this.talleresService.findByProfesor(usuarioId);
   }
 
+  // RUTA PARA PROFESORES: Top 3 alumnos con mejor asistencia
+  @UseGuards(AuthGuard('jwt'))
+  @Get('profesor/ranking')
+  async getRankingProfesor(@Req() req: any) {
+    const user = req.user;
+    const esProfesor = user.roles && user.roles.some((r: string) => r.toUpperCase() === 'PROFESOR');
+    const esAdmin = user.roles && user.roles.some((r: string) => r.toUpperCase() === 'ADMIN');
+
+    if (!esProfesor && !esAdmin) throw new UnauthorizedException('Acceso denegado.');
+    
+    const limit = 3;
+    return this.talleresService.getRankingAsistenciaProfesor(user.sub, limit);
+  }
+
   // RUTA PARA ALUMNOS: Mis talleres inscritos
   @UseGuards(AuthGuard('jwt'))
   @Get('mis-talleres-alumno')
@@ -411,7 +425,8 @@ export class TalleresController {
         });
       }
 
-      await this.auditService.log('CREATE', 'Asistencia', +tallerId, `Asistencia masiva guardada. Fecha: ${fecha}`, req.user.nombre);
+      const detalleAsistencia = `Registro de asistencia actualizado. Fecha: ${fecha}. Datos: ${JSON.stringify(payload.asistencias)}`;
+      await this.auditService.log('CREATE', 'Asistencia', +tallerId, detalleAsistencia, req.user.nombre);
 
       return { status: 'SUCCESS', message: 'Registro de asistencia guardado exitosamente.' };
     });
