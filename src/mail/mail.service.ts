@@ -7,9 +7,12 @@ export class MailService {
 
   constructor() {
     this.transporter = nodemailer.createTransport({
-      host: 'smtp.gmail.com', // Asumimos Gmail/Google Workspace por eduhuechuraba.cl
+      host: 'smtp.gmail.com',
       port: 465,
       secure: true,
+      pool: true, // Habilitar pool de conexiones
+      maxConnections: 5,
+      maxMessages: 100,
       auth: {
         user: process.env.MAIL_USER,
         pass: process.env.MAIL_PASS,
@@ -224,6 +227,66 @@ export class MailService {
       return true;
     } catch (error) {
       console.error('Error enviando correo:', error);
+      return false;
+    }
+  }
+
+  async sendStartReminder(
+    to: string,
+    alumnoNombre: string,
+    tallerNombre: string,
+    sedeNombre: string,
+    diaSemana: string,
+    horarioStr: string
+  ) {
+    const htmlContent = `
+      <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: auto; border: 1px solid #e0e0e0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
+        <div style="background: linear-gradient(135deg, #059669 0%, #10B981 100%); padding: 30px; text-align: center; color: white;">
+          <h1 style="margin: 0; font-size: 24px; letter-spacing: 1px;">¡Tu Taller Comienza Hoy!</h1>
+          <p style="margin: 10px 0 0 0; opacity: 0.9;">Recordatorio de Inicio - After School 2026</p>
+        </div>
+        
+        <div style="padding: 30px; background-color: white; line-height: 1.6; color: #374151;">
+          <h2 style="color: #111827; margin-top: 0; font-size: 20px;">Hola,</h2>
+          <p>Te recordamos que hoy <strong>${diaSemana}</strong> es el primer día de <strong>${alumnoNombre}</strong> en su taller:</p>
+          
+          <div style="background-color: #ECFDF5; border-radius: 8px; padding: 15px; margin: 20px 0; border-left: 4px solid #10B981;">
+            <p style="margin: 0; font-size: 16px; color: #065F46; font-weight: bold;">${tallerNombre}</p>
+            <p style="margin: 5px 0 0 0; font-size: 13px; color: #047857;">Sede: ${sedeNombre}</p>
+            <p style="margin: 3px 0 0 0; font-size: 13px; color: #047857;">Horario: ${horarioStr}</p>
+          </div>
+
+          <div style="background-color: #F9FAFB; border-radius: 8px; padding: 15px; margin: 25px 0;">
+            <h3 style="margin-top: 0; font-size: 15px; color: #111827;">💡 Recomendaciones para hoy:</h3>
+            <ul style="margin: 10px 0 0 0; padding-left: 20px; font-size: 14px; color: #4B5563;">
+              <li>Llegar 5-10 minutos antes del inicio.</li>
+              <li>Traer ropa cómoda si el taller lo requiere.</li>
+              <li>Presentarse con el monitor/profesor encargado en la sede.</li>
+            </ul>
+          </div>
+          
+          <div style="text-align: center; margin-top: 30px;">
+            <a href="https://after.eduhuechuraba.cl/login" style="background-color: #10B981; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Ver detalles en el Portal</a>
+          </div>
+        </div>
+        
+        <div style="background-color: #F9FAFB; padding: 20px; text-align: center; border-top: 1px solid #e0e0e0;">
+          <p style="margin: 0; font-size: 11px; color: #9CA3AF;">Departamento de Educación - I. Municipalidad de Huechuraba</p>
+          <p style="margin: 5px 0 0 0; font-size: 10px; color: #D1D5DB;">Has recibido este correo porque estás inscrito en el programa After School.</p>
+        </div>
+      </div>
+    `;
+
+    try {
+      await this.transporter.sendMail({
+        from: '"After School Huechuraba" <afterschool@eduhuechuraba.cl>',
+        to,
+        subject: `¡Hoy comienza su taller!: ${alumnoNombre} - ${tallerNombre}`,
+        html: htmlContent,
+      });
+      return true;
+    } catch (error) {
+      console.error('Error enviando recordatorio de inicio:', error);
       return false;
     }
   }

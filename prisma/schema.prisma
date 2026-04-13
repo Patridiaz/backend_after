@@ -113,6 +113,7 @@ model Inscripcion {
   necesidadesEspecialesDetalle String? @db.VarChar(1000)
   apoyoEscolar                 String? @db.VarChar(1000)
   usoImagen                    Boolean @default(false)
+  notificacionInicioEnviada    Boolean @default(false)
 
   @@unique([alumnoId, tallerId])
 }

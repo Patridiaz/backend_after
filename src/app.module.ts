@@ -1,5 +1,6 @@
 import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { CacheModule } from '@nestjs/cache-manager';
+import { ScheduleModule } from '@nestjs/schedule';
 import * as redisStore from 'cache-manager-redis-yet';
 import { ConfigController } from './config/config.controller';
 import { AppController } from './app.controller';
@@ -16,9 +17,11 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { AnalyticsMiddleware } from './analytics/analytics.middleware';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuditModule } from './audit/audit.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
+    ScheduleModule.forRoot(),
     CacheModule.register({ 
       isGlobal: true,
       ttl: 60000, // 1 minuto por defecto
@@ -32,7 +35,8 @@ import { AuditModule } from './audit/audit.module';
     SigeModule,
     UsuariosModule,
     AnalyticsModule,
-    AuditModule
+    AuditModule,
+    NotificationsModule
   ],
   controllers: [AppController, ConfigController],
   providers: [AppService],
