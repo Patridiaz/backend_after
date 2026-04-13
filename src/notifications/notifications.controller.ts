@@ -13,7 +13,7 @@ export class NotificationsController {
 
   @Post('test-email')
   async testEmail() {
-    const testEmail = 'pdiaz@eduhuechuraba.cl';
+    const testEmail = '';
     // Buscamos una inscripción real para que el correo tenga datos reales
     const inscripcion = await (this.notificationsService as any).prisma.inscripcion.findFirst({
       where: {
