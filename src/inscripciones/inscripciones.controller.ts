@@ -292,7 +292,10 @@ export class InscripcionesController {
       return { status: 'SUCCESS', message: 'Ficha Clínica y Académica actualizada exitosamente.' };
     }).then(result => {
       // Disparamos log fuera del scope transaccional explícito
-      const detalleCompleto = `Ficha editada. Datos: ${JSON.stringify(payload)}`;
+      let detalleCompleto = `Ficha editada. Datos: ${JSON.stringify(payload)}`;
+      if (payload.salud?.activo === false) detalleCompleto = `DESERCIÓN: El alumno fue dado de baja del taller. ${detalleCompleto}`;
+      if (payload.salud?.activo === true && ficha.activo === false) detalleCompleto = `RE-ACTIVACIÓN: El alumno fue re-incorporado al taller. ${detalleCompleto}`;
+
       this.auditService.log('UPDATE', !isEspera ? 'Inscripcion' : 'ListaEspera', searchId, detalleCompleto, req.user.nombre);
       return result;
     });

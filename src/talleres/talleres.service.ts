@@ -2,6 +2,7 @@ import { Injectable, ConflictException, NotFoundException, Inject } from '@nestj
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
 import { differenceInYears } from 'date-fns';
 import { CreateSedeDto } from './dto/create-sede.dto';
 import { CreateTallerDto } from './dto/create-taller.dto';
@@ -20,6 +21,7 @@ const DIAS_LECTIVOS = [1, 2, 3, 4, 5]; // Lunes a Viernes (0=Domingo, 6=Sábado)
 export class TalleresService {
   constructor(
     private prisma: PrismaService,
+    private auditService: AuditService,
     @Inject(CACHE_MANAGER) private cacheManager: Cache
   ) {}
 
@@ -55,6 +57,14 @@ export class TalleresService {
       where: { id },
       data: dataUpdate
     });
+
+    // Auditoría de cambios
+    if (dto.activo !== undefined && dto.activo !== existe.activo) {
+       await this.auditService.log('UPDATE', 'Taller', id, `Taller "${updated.nombre}" cambiado a ${dto.activo ? 'ACTIVO' : 'INACTIVO'}`);
+    } else {
+       await this.auditService.log('UPDATE', 'Taller', id, `Taller "${updated.nombre}" actualizado (Edición general)`);
+    }
+
     await this.clearCache();
     return updated;
   }
