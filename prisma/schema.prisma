@@ -31,6 +31,7 @@ model Taller {
   asistencias      Asistencia[]
   listaEspera      ListaEspera[]    @relation("TallerEnEspera")
   intereses        InteresTaller[]
+  activo           Boolean          @default(true)
 }
 
 model HorarioTaller {
@@ -114,6 +115,7 @@ model Inscripcion {
   apoyoEscolar                 String? @db.VarChar(1000)
   usoImagen                    Boolean @default(false)
   notificacionInicioEnviada    Boolean @default(false)
+  activo                       Boolean @default(true)
 
   @@unique([alumnoId, tallerId])
 }

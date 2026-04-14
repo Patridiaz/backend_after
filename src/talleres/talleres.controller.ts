@@ -191,7 +191,8 @@ export class TalleresController {
         inscritos: t._count.inscripciones,
         enEspera: t._count.listaEspera,
         ocupacion: porcentaje,
-        estado: t.cuposDisponibles <= 0 ? 'LLENO' : 'DISPONIBLE'
+        estado: t.cuposDisponibles <= 0 ? 'LLENO' : 'DISPONIBLE',
+        activo: t.activo
       };
     });
   }
@@ -352,9 +353,12 @@ export class TalleresController {
     const dateStart = new Date(`${fecha}T00:00:00.000Z`);
     const dateEnd = new Date(`${fecha}T23:59:59.999Z`);
 
-    // 1. Obtenemos a todos los alumnos inscritos Oficialmente en ese taller
+    // 1. Obtenemos a todos los alumnos inscritos Oficialmente en ese taller (y que estén activos)
     const inscripciones = await this.talleresService['prisma'].inscripcion.findMany({
-      where: { tallerId: +tallerId },
+      where: { 
+        tallerId: +tallerId,
+        activo: true 
+      },
       include: {
         alumno: { include: { establecimiento: true, apoderado: true } }
       },

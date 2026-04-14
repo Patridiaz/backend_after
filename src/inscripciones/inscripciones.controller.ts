@@ -101,7 +101,8 @@ export class InscripcionesController {
         email: (item.apoderado || item.alumno.apoderado)?.email,
         telefono: (item.apoderado || item.alumno.apoderado)?.telefono,
         parentesco: item.parentesco
-      }
+      },
+      activo: item.activo
     });
 
     return {
@@ -254,10 +255,34 @@ export class InscripcionesController {
         if (payload.salud.necesidadesEspeciales !== undefined) fichaUpdateData.necesidadesEspeciales = payload.salud.necesidadesEspeciales;
         if (payload.salud.necesidadesEspecialesDetalle !== undefined) fichaUpdateData.necesidadesEspecialesDetalle = payload.salud.necesidadesEspecialesDetalle;
         if (payload.salud.apoyoEscolar !== undefined) fichaUpdateData.apoyoEscolar = payload.salud.apoyoEscolar;
+        if (payload.salud.activo !== undefined) fichaUpdateData.activo = payload.salud.activo;
       }
 
       if (Object.keys(fichaUpdateData).length > 0) {
         if (!isEspera) {
+          // LÓGICA DE CUPOS SI CAMBIA EL ESTADO ACTIVO
+          if (fichaUpdateData.activo !== undefined && fichaUpdateData.activo !== ficha.activo) {
+             const tallerId = ficha.tallerId;
+             if (fichaUpdateData.activo === false) {
+                 // Desertar: Liberar cupo
+                 await tx.taller.update({
+                     where: { id: tallerId },
+                     data: { cuposDisponibles: { increment: 1 } }
+                 });
+             } else {
+                 // Re-activar: Ocupar cupo (si hay)
+                 const taller = await tx.taller.findUnique({ where: { id: tallerId } });
+                 if (!taller) throw new BadRequestException('El taller de la inscripción no existe.');
+                 
+                 if (taller.cuposDisponibles <= 0) {
+                     throw new BadRequestException('No se puede re-activar al alumno: El taller ya no tiene cupos disponibles.');
+                 }
+                 await tx.taller.update({
+                     where: { id: tallerId },
+                     data: { cuposDisponibles: { decrement: 1 } }
+                 });
+             }
+          }
           await tx.inscripcion.update({ where: { id: searchId }, data: fichaUpdateData });
         } else {
           await tx.listaEspera.update({ where: { id: searchId }, data: fichaUpdateData });
@@ -721,6 +746,76 @@ export class InscripcionesController {
     return { encontrado: false };
   }
 
+  // 🔄 TRASLADAR ALUMNO DE INSCRIPCIÓN A LISTA DE ESPERA
+  @Post('admin/trasladar-a-espera/:id')
+  @UseGuards(AuthGuard('jwt'))
+  async trasladarAEspera(@Param('id') id: string, @Req() req: any) {
+    this.checkAdminOrCoordinador(req.user);
+    const inscripcionId = parseInt(id);
+
+    return await this.prisma.$transaction(async (tx) => {
+      // 1. Buscar la inscripción original
+      const insc = await tx.inscripcion.findUnique({
+        where: { id: inscripcionId },
+        include: { alumno: true, taller: true }
+      });
+
+      if (!insc) throw new BadRequestException('Inscripción no encontrada.');
+
+      // 2. Calcular la nueva posición en la lista de espera
+      const totalEspera = await tx.listaEspera.count({
+        where: { tallerId: insc.tallerId }
+      });
+      const posicion = totalEspera + 1;
+
+      // 3. Crear el registro en lista de espera (clonando datos de la ficha)
+      const waitlist = await tx.listaEspera.create({
+        data: {
+          alumnoId: insc.alumnoId,
+          tallerId: insc.tallerId,
+          apoderadoId: insc.alumno.apoderadoId,
+          parentesco: insc.parentesco,
+          parentescoOtro: insc.parentescoOtro,
+          enfermedadCronica: insc.enfermedadCronica,
+          enfermedadCronicaDetalle: insc.enfermedadCronicaDetalle,
+          tratamientoMedico: insc.tratamientoMedico,
+          alergias: insc.alergias,
+          necesidadesEspeciales: insc.necesidadesEspeciales,
+          necesidadesEspecialesDetalle: insc.necesidadesEspecialesDetalle,
+          apoyoEscolar: insc.apoyoEscolar,
+          usoImagen: insc.usoImagen,
+          posicion
+        }
+      });
+
+      // 4. Eliminar la inscripción original
+      await tx.inscripcion.delete({ where: { id: inscripcionId } });
+
+      // 5. Auditoría (Nota: Se eliminó el incremento de cupo por solicitud del usuario)
+      await this.auditService.log(
+        'UPDATE', 
+        'Inscripcion', 
+        inscripcionId, 
+        `Alumno ${insc.alumno.rut} TRASLADADO a lista de espera (Puesto ${posicion}) taller ${insc.tallerId}`, 
+        req.user.nombre
+      );
+
+      // Limpiar caché de talleres disponibles
+      try {
+        const store: any = (this.cacheManager as any).store;
+        if (store.keys) {
+          const keys = await store.keys('talleres_disponibles_*');
+          for (const key of keys) await this.cacheManager.del(key);
+        }
+      } catch (e) {}
+
+      return {
+        message: 'Alumno trasladado a lista de espera exitosamente.',
+        waitlistId: waitlist.id,
+        posicion
+      };
+    });
+  }
 
   @Post('nueva')
   async inscribir(@Body() dto: CreateInscripcioneDto, @Res({ passthrough: true }) response: Response) {
@@ -740,6 +835,10 @@ export class InscripcionesController {
                   include: { sede: true, horarios: true }
                 });
                 if (!taller) throw new BadRequestException('El taller no existe.');
+                
+                if (!taller.activo) {
+                    throw new BadRequestException('Este taller no está aceptando nuevas inscripciones ni ingresos a lista de espera en este momento.');
+                }
 
                 const fechaNac = new Date(dto.fechaNacimiento);
                 const edadAlumno = differenceInYears(new Date(), fechaNac);

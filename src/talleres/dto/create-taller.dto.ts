@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsString, IsInt, IsOptional, Min, IsArray, ValidateNested } from 'class-validator';
+import { IsNotEmpty, IsString, IsInt, IsOptional, Min, IsArray, ValidateNested, IsBoolean } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class HorarioTallerDto {
@@ -51,4 +51,8 @@ export class CreateTallerDto {
   @IsInt()
   @IsNotEmpty()
   sedeId: number;
+
+  @IsOptional()
+  @IsBoolean()
+  activo?: boolean;
 }

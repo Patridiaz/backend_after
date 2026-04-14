@@ -217,7 +217,9 @@ export class TalleresService {
 
     const { sedeId, fechaNacimiento, search, minAge, maxAge, includeFull, page, limit } = params;
 
-    const where: any = {};
+    const where: any = {
+      activo: true
+    };
 
     // 1. Filtro por Cupos (Si includeFull es false o no viene, solo mostramos los que tienen cupo)
     if (includeFull !== 'true') {
