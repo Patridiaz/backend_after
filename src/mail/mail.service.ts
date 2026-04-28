@@ -419,10 +419,10 @@ export class MailService {
       await this.transporter.sendMail({
         from: '"Sistema de Asistencia" <' + process.env.MAIL_USER + '>',
         to,
-        subject: \`⭐ Racha de Asistencia: \${alumnoNombre} (\${consecutivas} clases)\`,
+        subject: `⭐ Racha de Asistencia: ${alumnoNombre} (${consecutivas} clases)`,
         html: htmlContent,
       });
-      console.log(\`✅ Email de asistencia (\${consecutivas}) enviado a: \${to}\`);
+      console.log(`✅ Email de asistencia (${consecutivas}) enviado a: ${to}`);
       return true;
     } catch (error) {
       console.error('Error enviando correo de asistencia consecutiva:', error);

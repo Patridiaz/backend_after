@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { TomarAsistenciaDto } from './dto/tomar-asistencia.dto';
+import { TomarAsistenciaDto, EstadoAsistencia } from './dto/tomar-asistencia.dto';
 import { TomarAsistenciaMensualDto } from './dto/tomar-asistencia-mensual.dto';
 import { MailService } from 'src/mail/mail.service';
 
@@ -63,7 +63,7 @@ export class AsistenciaService {
         });
         resultados.push(registro);
       }
-      return { totalProcesados: resultados.length, success: true, presentesParaCheck: dto.cambios.filter(c => c.estado === 'PRESENTE').map(c => c.alumnoId) };
+      return { totalProcesados: resultados.length, success: true, presentesParaCheck: dto.cambios.filter(c => c.estado === EstadoAsistencia.PRESENTE).map(c => c.alumnoId) };
     }).then(async res => {
        const distinctAlumnos = Array.from(new Set(res.presentesParaCheck));
        for(const id of distinctAlumnos) {
@@ -121,7 +121,7 @@ export class AsistenciaService {
         });
         resultados.push(registro);
       }
-      return { resultados, presentesParaCheck: dto.lista.filter(c => c.estado === 'PRESENTE').map(c => c.alumnoId) };
+      return { resultados, presentesParaCheck: dto.lista.filter(c => c.estado === EstadoAsistencia.PRESENTE).map(c => c.alumnoId) };
     }).then(async res => {
        const distinctAlumnos = Array.from(new Set(res.presentesParaCheck));
        for(const id of distinctAlumnos) {
@@ -140,7 +140,7 @@ export class AsistenciaService {
 
       let consecutives = 0;
       for (const a of asistencias) {
-        if (a.estado === 'PRESENTE') consecutives++;
+        if (a.estado === EstadoAsistencia.PRESENTE || a.estado === 'P') consecutives++;
         else break;
       }
 
