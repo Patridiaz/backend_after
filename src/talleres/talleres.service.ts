@@ -736,8 +736,18 @@ export class TalleresService {
       .sort((a, b) => b.porcentaje - a.porcentaje || b.totalSesiones - a.totalSesiones)
       .slice(0, limit);
   }
-  async getRankingAsistencia(limit: number = 50) {
+  async getRankingAsistencia(limit: number = 50, sedeId?: number) {
+    const where: any = {};
+    if (sedeId) {
+      where.inscripciones = {
+        some: {
+          taller: { sedeId }
+        }
+      };
+    }
+
     const alumnos = await this.prisma.alumno.findMany({
+      where,
       select: {
         id: true,
         rut: true,
@@ -752,7 +762,23 @@ export class TalleresService {
           }
         },
         asistencias: {
+          where: sedeId ? { taller: { sedeId } } : undefined,
           select: { estado: true }
+        },
+        apoderado: {
+          select: { nombre: true, email: true, telefono: true }
+        },
+        inscripciones: {
+          where: sedeId ? { taller: { sedeId } } : undefined,
+          select: {
+            taller: { select: { nombre: true } }
+          }
+        },
+        listaEspera: {
+          where: sedeId ? { taller: { sedeId } } : undefined,
+          select: {
+            taller: { select: { nombre: true } }
+          }
         }
       }
     });
@@ -766,6 +792,14 @@ export class TalleresService {
         ? Math.round(((presentes + justificados) / totalSesiones) * 100) 
         : 0;
 
+      const inscritos = alumno.inscripciones.map(i => i.taller.nombre);
+      const enEspera = alumno.listaEspera.map(e => `${e.taller.nombre} (En lista de espera)`);
+      
+      let talleresLabel = [...inscritos, ...enEspera].join(', ');
+      if (!talleresLabel && (alumno.listaEspera.length > 0)) {
+         talleresLabel = "Se encuentra en lista de espera";
+      }
+
       return {
         id: alumno.id,
         rut: alumno.rut,
@@ -777,7 +811,9 @@ export class TalleresService {
         justificados,
         ausentes,
         porcentaje,
-        talleresInscritos: alumno._count.inscripciones
+        talleresInscritos: alumno._count.inscripciones,
+        taller: talleresLabel || 'N/A',
+        apoderado: alumno.apoderado
       };
     });
 
@@ -808,7 +844,10 @@ export class TalleresService {
 
     // 3. Obtener alumnos inscritos con sus asistencias en ESTE taller
     const inscripciones = await this.prisma.inscripcion.findMany({
-      where: { tallerId },
+      where: { 
+        tallerId,
+        activo: true
+      },
       include: {
         alumno: {
           select: {

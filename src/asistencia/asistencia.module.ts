@@ -2,9 +2,10 @@ import { Module } from '@nestjs/common';
 import { AsistenciaService } from './asistencia.service';
 import { AsistenciaController } from './asistencia.controller';
 import { PrismaModule } from 'src/prisma/prisma.module';
+import { MailModule } from 'src/mail/mail.module';
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, MailModule],
   controllers: [AsistenciaController],
   providers: [AsistenciaService],
 })

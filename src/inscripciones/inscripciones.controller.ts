@@ -1,4 +1,4 @@
-import { Controller, Post, Body, BadRequestException, Get, Param, Res, HttpStatus, Inject, UseGuards, Req, UnauthorizedException, Query, Patch } from '@nestjs/common';
+import { Controller, Post, Body, BadRequestException, Get, Param, Res, HttpStatus, Inject, UseGuards, Req, UnauthorizedException, Query, Patch, NotFoundException } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { AuthGuard } from '@nestjs/passport';
 import type { Cache } from 'cache-manager';
@@ -93,7 +93,8 @@ export class InscripcionesController {
         alergias: item.alergias,
         necesidadesEspeciales: item.necesidadesEspeciales,
         necesidadesEspecialesDetalle: item.necesidadesEspecialesDetalle,
-        apoyoEscolar: item.apoyoEscolar
+        apoyoEscolar: item.apoyoEscolar,
+        usoImagen: item.usoImagen
       },
       apoderado: {
         nombre: (item.apoderado || item.alumno.apoderado)?.nombre,
@@ -1026,5 +1027,290 @@ export class InscripcionesController {
         }
     }
     throw lastError;
+  }
+
+  // --- 🥉🥈🥇 FLUJO ENCARGADO -> COORDINADOR ---
+
+  @Get('coordinador/pendientes')
+  @UseGuards(AuthGuard('jwt'))
+  async getPendientesContacto(@Req() req: any) {
+    this.checkAdminOrCoordinador(req.user);
+    
+    const inscripciones = await this.prisma.inscripcion.findMany({
+      where: { estado: 'PENDIENTE_CONTACTO' },
+      include: {
+        alumno: { include: { apoderado: true, establecimiento: true } },
+        taller: { include: { sede: true } }
+      },
+      orderBy: { id: 'asc' }
+    });
+
+    const esperas = await this.prisma.listaEspera.findMany({
+      where: { estado: 'PENDIENTE_CONTACTO' },
+      include: {
+        alumno: { include: { apoderado: true, establecimiento: true } },
+        taller: { include: { sede: true } },
+        apoderado: true
+      },
+      orderBy: { id: 'asc' }
+    });
+
+    return {
+      inscripciones: inscripciones.map(i => ({ ...i, tipo: 'INSCRIPCION' })),
+      esperas: esperas.map(e => ({ ...e, tipo: 'ESPERA' }))
+    };
+  }
+
+  @Post('encargado/pre-inscribir')
+  @UseGuards(AuthGuard('jwt'))
+  async preInscribirEncargado(@Body() dto: CreateInscripcioneDto, @Req() req: any) {
+    const user = req.user;
+    const esEncargado = user.roles?.some((r: string) => r.toUpperCase() === 'ENCARGADO_ESCUELA');
+    const esAdmin = user.roles?.some((r: string) => r.toUpperCase() === 'ADMIN');
+
+    if (!esEncargado && !esAdmin) {
+      throw new UnauthorizedException('Acceso denegado. Solo Encargados o Admins.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const rutAlumno = dto.rut.trim().toUpperCase().replace(/[^0-9K]/g, '');
+      const rutApoderado = dto.rutApoderado.trim().toUpperCase().replace(/[^0-9K]/g, '');
+
+      // 0. Verificar si ya existe inscripción o espera
+      const [existingIns, existingWait] = await Promise.all([
+        tx.inscripcion.findFirst({ where: { alumno: { rut: rutAlumno }, tallerId: dto.tallerId } }),
+        tx.listaEspera.findFirst({ where: { alumno: { rut: rutAlumno }, tallerId: dto.tallerId } })
+      ]);
+
+      if (existingIns || existingWait) {
+        throw new BadRequestException('El estudiante ya se encuentra inscrito o en lista de espera para este taller.');
+      }
+
+      // 1. Taller
+      const taller = await tx.taller.findUnique({ 
+        where: { id: dto.tallerId },
+        include: { sede: true } 
+      });
+      if (!taller) throw new BadRequestException('El taller no existe.');
+
+      // 2. Apoderado
+      let apoderado = await tx.apoderado.findUnique({ where: { rut: rutApoderado } });
+      if (!apoderado) {
+        apoderado = await tx.apoderado.create({
+          data: {
+            rut: rutApoderado,
+            nombre: dto.nombreApoderado.trim().toUpperCase(),
+            email: dto.emailApoderado.toLowerCase().trim(),
+            telefono: dto.telefonoApoderado,
+            password: await bcrypt.hash(rutApoderado, 5)
+          }
+        });
+      }
+
+      // 3. Alumno (Create or Update)
+      let alumno = await tx.alumno.findUnique({ where: { rut: rutAlumno } });
+      if (!alumno) {
+        alumno = await tx.alumno.create({
+          data: {
+            rut: rutAlumno,
+            nombres: dto.nombres.trim().toUpperCase(),
+            apellidos: dto.apellidos.trim().toUpperCase(),
+            fechaNacimiento: new Date(dto.fechaNacimiento),
+            apoderadoId: apoderado.id
+          }
+        });
+      } else {
+        alumno = await tx.alumno.update({
+          where: { id: alumno.id },
+          data: {
+            nombres: dto.nombres.trim().toUpperCase(),
+            apellidos: dto.apellidos.trim().toUpperCase(),
+            fechaNacimiento: new Date(dto.fechaNacimiento)
+          }
+        });
+      }
+
+      // 4. Inscripción / Espera con estado PENDIENTE_CONTACTO
+      let res;
+      if (taller.cuposDisponibles > 0) {
+        res = await tx.inscripcion.create({
+          data: {
+            tallerId: dto.tallerId,
+            alumnoId: alumno.id,
+            parentesco: dto.parentesco,
+            estado: 'PENDIENTE_CONTACTO'
+          }
+        });
+        await tx.taller.update({ where: { id: dto.tallerId }, data: { cuposDisponibles: { decrement: 1 } } });
+      } else {
+        const totalEspera = await tx.listaEspera.count({ where: { tallerId: dto.tallerId } });
+        res = await tx.listaEspera.create({
+          data: {
+            alumnoId: alumno.id,
+            tallerId: dto.tallerId,
+            apoderadoId: apoderado.id,
+            posicion: totalEspera + 1,
+            parentesco: dto.parentesco,
+            estado: 'PENDIENTE_CONTACTO'
+          }
+        });
+      }
+
+      // 5. Correo de Pre-inscripción
+      await this.mailService.sendPreEnrollmentNotice(
+        dto.emailApoderado,
+        dto.nombres,
+        taller.nombre,
+        taller.sede.nombre
+      );
+
+      await this.auditService.log('CREATE', 'PreInscripcion', res.id, `Pre-inscripción realizada por encargado: ${user.nombre}`, user.nombre);
+
+      return { status: 'SUCCESS', message: 'Pre-inscripción realizada. Se ha enviado correo al apoderado.' };
+    });
+  }
+
+
+  @Patch('coordinador/finalizar-registro/:id')
+  @UseGuards(AuthGuard('jwt'))
+  async finalizarRegistroCoordinador(
+    @Param('id') id: string, 
+    @Query('tipo') tipo: string,
+    @Body() payload: any, 
+    @Req() req: any
+  ) {
+    this.checkAdminOrCoordinador(req.user);
+    const isEspera = tipo === 'ESPERA';
+
+    return this.prisma.$transaction(async (tx) => {
+      const updateData = {
+        enfermedadCronica: payload.enfermedadCronica,
+        enfermedadCronicaDetalle: payload.enfermedadCronicaDetalle,
+        tratamientoMedico: payload.tratamientoMedico,
+        alergias: payload.alergias,
+        necesidadesEspeciales: payload.necesidadesEspeciales,
+        necesidadesEspecialesDetalle: payload.necesidadesEspecialesDetalle,
+        apoyoEscolar: payload.apoyoEscolar,
+        usoImagen: payload.usoImagen,
+        estado: 'ACTIVA'
+      };
+
+      let record;
+      if (!isEspera) {
+        record = await tx.inscripcion.update({
+          where: { id: +id },
+          data: updateData,
+          include: { alumno: { include: { apoderado: true } }, taller: { include: { sede: true } } }
+        });
+      } else {
+        record = await tx.listaEspera.update({
+          where: { id: +id },
+          data: updateData,
+          include: { alumno: { include: { apoderado: true } }, taller: { include: { sede: true } } }
+        });
+      }
+
+      // Correo de Confirmación Final
+      await this.mailService.sendFinalEnrollmentConfirmation(
+        record.alumno.apoderado.email,
+        record.alumno.nombres,
+        record.taller.nombre,
+        record.taller.sede.nombre
+      );
+
+      await this.auditService.log('UPDATE', 'InscripcionFinalizada', +id, `Registro completado por coordinador: ${req.user.nombre}`, req.user.nombre);
+
+      return { status: 'SUCCESS', message: 'Registro finalizado y correo de confirmación enviado.' };
+    });
+  }
+
+  @Post('admin/trasladar-taller')
+  @UseGuards(AuthGuard('jwt'))
+  async trasladarTaller(@Body() body: { id: number, tipo: string, nuevoTallerId: number }, @Req() req: any) {
+    this.checkAdminOrCoordinador(req.user);
+    const { id, tipo, nuevoTallerId } = body;
+    const isEspera = tipo === 'ESPERA';
+
+    return this.prisma.$transaction(async (tx) => {
+      // 1. Obtener registro actual
+      let record;
+      if (!isEspera) {
+        record = await tx.inscripcion.findUnique({ 
+          where: { id }, 
+          include: { taller: true, alumno: { include: { apoderado: true } } } 
+        });
+      } else {
+        record = await tx.listaEspera.findUnique({ 
+          where: { id }, 
+          include: { taller: true, alumno: { include: { apoderado: true } } } 
+        });
+      }
+      
+      if (!record) throw new NotFoundException('Registro no encontrado.');
+
+      const tallerAntiguoId = record.tallerId;
+      if (tallerAntiguoId === nuevoTallerId) throw new BadRequestException('El nuevo taller es el mismo que el actual.');
+
+      // 2. Verificar nuevo taller
+      const nuevoTaller = await tx.taller.findUnique({ where: { id: nuevoTallerId } });
+      if (!nuevoTaller) throw new NotFoundException('El nuevo taller no existe.');
+
+      // 3. Actualizar cupos del taller antiguo (solo si era una inscripción activa)
+      if (!isEspera) {
+        await tx.taller.update({
+          where: { id: tallerAntiguoId },
+          data: { cuposDisponibles: { increment: 1 } }
+        });
+      }
+
+      // 4. Determinar si entra a Inscripción o Lista de Espera en el nuevo taller
+      let target;
+      if (nuevoTaller.cuposDisponibles > 0) {
+        if (isEspera) {
+          await tx.listaEspera.delete({ where: { id } });
+          target = await tx.inscripcion.create({
+            data: {
+              alumnoId: record.alumnoId,
+              tallerId: nuevoTallerId,
+              parentesco: record.parentesco,
+              estado: record.estado === 'PENDIENTE_CONTACTO' ? 'PENDIENTE_CONTACTO' : 'ACTIVA'
+            }
+          });
+        } else {
+          target = await tx.inscripcion.update({
+            where: { id },
+            data: { tallerId: nuevoTallerId }
+          });
+        }
+        await tx.taller.update({
+          where: { id: nuevoTallerId },
+          data: { cuposDisponibles: { decrement: 1 } }
+        });
+      } else {
+        const totalEspera = await tx.listaEspera.count({ where: { tallerId: nuevoTallerId } });
+        if (!isEspera) {
+          await tx.inscripcion.delete({ where: { id } });
+          target = await tx.listaEspera.create({
+            data: {
+              alumnoId: record.alumnoId,
+              tallerId: nuevoTallerId,
+              apoderadoId: record.alumno.apoderadoId,
+              posicion: totalEspera + 1,
+              parentesco: record.parentesco,
+              estado: record.estado
+            }
+          });
+        } else {
+          target = await tx.listaEspera.update({
+            where: { id },
+            data: { tallerId: nuevoTallerId, posicion: totalEspera + 1 }
+          });
+        }
+      }
+
+      await this.auditService.log('UPDATE', 'TrasladoTaller', id, `Alumno ${record.alumno.rut} trasladado de ${record.taller.nombre} a ${nuevoTaller.nombre}`, req.user.nombre);
+
+      return { message: 'Traslado realizado exitosamente.', target };
+    });
   }
 }

@@ -151,12 +151,22 @@ export class TalleresController {
     return this.talleresService.getMetricas();
   }
 
-  // RUTA PARA COORDINADOR: Ranking de asistencia
   @UseGuards(AuthGuard('jwt'))
   @Get('admin/ranking-asistencia')
-  async getRankingAsistencia(@Req() req: any) {
-    this.checkAdminOrCoordinador(req.user);
-    return this.talleresService.getRankingAsistencia();
+  async getRankingAsistencia(@Query('sedeId') sedeId: string, @Req() req: any) {
+    const user = req.user;
+    const esEncargado = user.roles?.some((r: string) => r.toUpperCase() === 'ENCARGADO_ESCUELA');
+    
+    let targetSedeId = sedeId ? +sedeId : undefined;
+    
+    if (esEncargado) {
+      if (!user.sedeId) throw new UnauthorizedException('No tienes sede asignada.');
+      targetSedeId = user.sedeId;
+    } else {
+      this.checkAdminOrCoordinador(user);
+    }
+
+    return this.talleresService.getRankingAsistencia(1000, targetSedeId);
   }
 
   // 🥉🥈🥇 DASHBOARD DE OCUPACIÓN MAESTRO (Real-Time)

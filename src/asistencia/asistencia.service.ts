@@ -2,10 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { TomarAsistenciaDto } from './dto/tomar-asistencia.dto';
 import { TomarAsistenciaMensualDto } from './dto/tomar-asistencia-mensual.dto';
+import { MailService } from 'src/mail/mail.service';
 
 @Injectable()
 export class AsistenciaService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService, private mailService: MailService) {}
+
 
 
   async obtenerAsistenciaMensual(tallerId: number, mes: number, anio: number) {
@@ -61,7 +63,13 @@ export class AsistenciaService {
         });
         resultados.push(registro);
       }
-      return { totalProcesados: resultados.length, success: true };
+      return { totalProcesados: resultados.length, success: true, presentesParaCheck: dto.cambios.filter(c => c.estado === 'PRESENTE').map(c => c.alumnoId) };
+    }).then(async res => {
+       const distinctAlumnos = Array.from(new Set(res.presentesParaCheck));
+       for(const id of distinctAlumnos) {
+          await this.checkAndSendConsecutiveAttendanceEmail(dto.tallerId, id);
+       }
+       return { totalProcesados: res.totalProcesados, success: res.success };
     });
   }
 
@@ -113,7 +121,57 @@ export class AsistenciaService {
         });
         resultados.push(registro);
       }
-      return resultados;
+      return { resultados, presentesParaCheck: dto.lista.filter(c => c.estado === 'PRESENTE').map(c => c.alumnoId) };
+    }).then(async res => {
+       const distinctAlumnos = Array.from(new Set(res.presentesParaCheck));
+       for(const id of distinctAlumnos) {
+          await this.checkAndSendConsecutiveAttendanceEmail(dto.tallerId, id);
+       }
+       return res.resultados;
     });
   }
-}
+
+  private async checkAndSendConsecutiveAttendanceEmail(tallerId: number, alumnoId: number) {
+    try {
+      const asistencias = await this.prisma.asistencia.findMany({
+        where: { tallerId, alumnoId },
+        orderBy: { fecha: 'desc' }
+      });
+
+      let consecutives = 0;
+      for (const a of asistencias) {
+        if (a.estado === 'PRESENTE') consecutives++;
+        else break;
+      }
+
+      if (consecutives > 0 && consecutives % 5 === 0) {
+        const info = await this.prisma.taller.findUnique({
+          where: { id: tallerId },
+          include: {
+             inscripciones: {
+                where: { alumnoId },
+                include: { alumno: { include: { apoderado: true } } }
+             }
+          }
+        });
+
+        if (info && info.inscripciones.length > 0) {
+           const inscripcion = info.inscripciones[0];
+           const alumno = inscripcion.alumno;
+           const apoderado = alumno.apoderado;
+           if (apoderado && apoderado.email) {
+              await this.mailService.sendConsecutiveAttendanceEmail(
+                 apoderado.email,
+                 alumno.nombres,
+                 info.nombre,
+                 consecutives
+              );
+           }
+        }
+      }
+    } catch (e) {
+      console.error('Error al procesar email de asistencia consecutiva:', e);
+    }
+  }
+}
+
