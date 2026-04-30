@@ -1254,6 +1254,43 @@ export class InscripcionesController {
     });
   }
 
+  @Patch('coordinador/rechazar-registro/:id')
+  @UseGuards(AuthGuard('jwt'))
+  async rechazarRegistroCoordinador(
+    @Param('id') id: string, 
+    @Query('tipo') tipo: string,
+    @Req() req: any
+  ) {
+    this.checkAdminOrCoordinador(req.user);
+    const isEspera = tipo === 'ESPERA';
+
+    return this.prisma.$transaction(async (tx) => {
+      let record;
+      if (!isEspera) {
+        record = await tx.inscripcion.update({
+          where: { id: +id },
+          data: { estado: 'RECHAZADA', activo: false },
+          include: { taller: true }
+        });
+        
+        // Liberar cupo si era una inscripción directa
+        await tx.taller.update({
+          where: { id: record.tallerId },
+          data: { cuposDisponibles: { increment: 1 } }
+        });
+      } else {
+        record = await tx.listaEspera.update({
+          where: { id: +id },
+          data: { estado: 'RECHAZADA' }
+        });
+      }
+
+      await this.auditService.log('UPDATE', 'InscripcionRechazada', +id, `Registro rechazado (sin correo) por coordinador: ${req.user.nombre}`, req.user.nombre);
+
+      return { status: 'SUCCESS', message: 'Registro rechazado exitosamente.' };
+    });
+  }
+
   @Post('admin/trasladar-taller')
   @UseGuards(AuthGuard('jwt'))
   async trasladarTaller(@Body() body: { id: number, tipo: string, nuevoTallerId: number }, @Req() req: any) {

@@ -347,10 +347,11 @@ export class TalleresService {
       ? Math.round((totalAlumnosDesertores / totalAlumnosUnicos) * 100) 
       : 0;
 
-    const [totalTalleres, totalPresentes, totalAusentes] = await Promise.all([
+    const [totalTalleres, totalPresentes, totalAusentes, totalJustificados] = await Promise.all([
       this.prisma.taller.count(),
       this.prisma.asistencia.count({ where: { estado: 'P' } }),
       this.prisma.asistencia.count({ where: { estado: 'A' } }),
+      this.prisma.asistencia.count({ where: { estado: 'J' } }),
     ]);
 
     const idsMunicipales = [2, 3, 4, 5, 6, 7, 10];
@@ -369,7 +370,8 @@ export class TalleresService {
     ourUniqueRuts.forEach(rut => { if (municipalRutsSige.has(rut)) totalAlumnosMunicipales++; });
 
     const totalInscritosActivos = allInscriptions.filter(i => i.activo).length;
-    const porcentajeAsistencia = (totalPresentes + totalAusentes) > 0 ? Math.round((totalPresentes / (totalPresentes + totalAusentes)) * 100) : 0;
+    const totalRegistros = totalPresentes + totalAusentes + totalJustificados;
+    const porcentajeAsistencia = totalRegistros > 0 ? Math.round(((totalPresentes + totalJustificados) / totalRegistros) * 100) : 0;
     const porcentajeMunicipales = totalInscritosActivos > 0 ? Math.round((totalAlumnosMunicipales / totalInscritosActivos) * 100) : 0;
 
     const inscripcionesPorTallerRaw = await this.prisma.taller.findMany({
@@ -499,31 +501,74 @@ export class TalleresService {
     const where: any = {};
     if (sedeId) where.taller = { sedeId };
 
-    const asistencias = await this.prisma.asistencia.groupBy({
+    // 1. Obtener los IDs de alumnos que tienen al menos un registro de PRESENTE (fueron un día mínimo)
+    const resumenAsistencias = await this.prisma.asistencia.groupBy({
       by: ['alumnoId'],
-      where,
-      _count: { estado: true },
-      _sum: { id: true } // Placeholder, no necesitamos la suma pero group by requiere agregación
+      where: {
+        ...where,
+        estado: 'P'
+      },
+      _count: { _all: true }
     });
 
-    // Esta es una implementación simplificada para el ranking
-    // En un sistema real calcularíamos (Presentes / Total)
-    const inscritos = await this.prisma.alumno.findMany({
-      where: { id: { in: asistencias.map(a => a.alumnoId) } },
-      include: { asistencias: { where } }
+    if (resumenAsistencias.length === 0) return [];
+
+    const alumnoIds = resumenAsistencias.map(a => a.alumnoId);
+
+    // 2. Obtener detalles de los alumnos que además estén ACTIVOS en sus talleres
+    const alumnos = await this.prisma.alumno.findMany({
+      where: { 
+        id: { in: alumnoIds },
+        inscripciones: {
+          some: { 
+            activo: true,
+            taller: sedeId ? { sedeId } : {}
+          }
+        }
+      },
+      include: {
+        establecimiento: true,
+        asistencias: { 
+          where,
+          orderBy: { fecha: 'desc' }
+        },
+        inscripciones: {
+          where: { activo: true },
+          include: { 
+            taller: {
+              include: { sede: true }
+            }
+          }
+        }
+      }
     });
 
-    const ranking = inscritos.map(alumno => {
-      const total = alumno.asistencias.length;
-      const presentes = alumno.asistencias.filter(a => a.estado === 'P').length;
-      const porcentaje = total > 0 ? Math.round((presentes / total) * 100) : 0;
+    // 3. Mapear al formato extendido que espera el reporte del frontend
+    const ranking = alumnos.map(alumno => {
+      const asistencias = alumno.asistencias;
+      const total = asistencias.length;
+      const presentes = asistencias.filter(a => a.estado === 'P').length;
+      const ausentes = asistencias.filter(a => a.estado === 'A').length;
+      const justificados = asistencias.filter(a => a.estado === 'J').length;
+      
+      // La asistencia se considera Presente (P) o Justificado (J)
+      const porcentaje = total > 0 
+        ? Math.round(((presentes + justificados) / total) * 100) 
+        : 0;
+      
       return {
         id: alumno.id,
         rut: alumno.rut,
-        nombres: alumno.nombres,
-        apellidos: alumno.apellidos,
+        nombre: `${alumno.nombres} ${alumno.apellidos}`,
+        establecimiento: alumno.establecimiento?.nombre || 'N/A',
+        taller: alumno.inscripciones.map(i => i.taller.nombre).join(', '),
+        totalSesiones: total,
+        presentes,
+        ausentes,
+        justificados,
         porcentaje,
-        totalClases: total
+        // Metadatos extra solicitados en auditorías previas
+        consentimientoImagen: alumno.inscripciones.some(i => i.usoImagen) ? 'SÍ' : 'NO'
       };
     });
 
