@@ -69,6 +69,14 @@ export class InscripcionesController {
       ]
     });
 
+    // 3. ✨ INTELIGENCIA DE DESERCIÓN: Obtenemos todos los alumnos que tienen al menos una inscripción INACTIVA
+    const desertoresRaw = await this.prisma.inscripcion.findMany({
+      where: { activo: false },
+      select: { alumnoId: true },
+      distinct: ['alumnoId']
+    });
+    const setDesertores = new Set(desertoresRaw.map(d => d.alumnoId));
+
     const mapItem = (item: any, tipo: string) => ({
       id: item.id,
       tipo,
@@ -103,7 +111,8 @@ export class InscripcionesController {
         telefono: (item.apoderado || item.alumno.apoderado)?.telefono,
         parentesco: item.parentesco
       },
-      activo: item.activo
+      activo: item.activo,
+      tieneDesercion: setDesertores.has(item.alumnoId)
     });
 
     return {
@@ -513,12 +522,13 @@ export class InscripcionesController {
     }
   }
 
-  @Get('auditoria-sige')
+  @Get('auditoria-sige-v2')
   async getAuditoriaSige() {
     const idsMunicipales = [2, 3, 4, 5, 6, 7, 10];
     
-    // 1. Obtenemos solo a los alumnos que REALMENTE tienen inscripciones activas
+    // 1. Obtenemos todas las inscripciones activas
     const inscripciones = await this.prisma.inscripcion.findMany({
+      where: { activo: true },
       include: {
         alumno: true,
         taller: { include: { sede: true } }
@@ -527,54 +537,74 @@ export class InscripcionesController {
 
     if (inscripciones.length === 0) return [];
 
-    // 2. Extraemos los RUTs únicos de los inscritos para el cruce (RUT limpio)
-    const runsInscritos = Array.from(new Set(
-      inscripciones.map(i => i.alumno.rut.replace(/[^0-9K]/g, ''))
-    ));
-
-    // 3. Consultamos en SIGE por los alumnos inscritos QUE PERTENECEN a los 7 colegios
-    const nominaSigeMatch = await this.prisma.alumnoSige.findMany({
-      where: {
-        sedeId: { in: idsMunicipales },
-        OR: [
-          { runc: { in: runsInscritos } },
-          { runc: { in: runsInscritos.map((r: string) => r.length > 1 ? r.slice(0, -1) + '-' + r.slice(-1) : r) } }
-        ]
-      },
-      include: { sede: true }
+    // 2. Agrupamos inscripciones por RUT (normalizado: sin ceros, sin guiones, uppercase)
+    const inscripcionesPorRut = new Map<string, any[]>();
+    inscripciones.forEach(ins => {
+      const rut = ins.alumno.rut.replace(/[^0-9Kk]/g, '').toUpperCase().replace(/^0+/, '');
+      const list = inscripcionesPorRut.get(rut) || [];
+      list.push(ins);
+      inscripcionesPorRut.set(rut, list);
     });
 
-    // 4. Obtenemos los nombres de los 7 establecimientos para asegurar que todos aparezcan en el reporte
+    const runsInscritos = Array.from(inscripcionesPorRut.keys());
+
+    // 3. Consultamos en SIGE por los alumnos de las sedes municipales (últimos 2 años para asegurar vigencia)
+    const currentYear = new Date().getFullYear();
+    const nominaSige = await this.prisma.alumnoSige.findMany({
+      where: {
+        sedeId: { in: idsMunicipales },
+        anio: { gte: 2024 }
+      },
+      orderBy: { anio: 'desc' }
+    });
+
+    // 4. Aseguramos unicidad de alumnos SIGE (el registro más reciente por cada RUT)
+    const sigeUnicoPorRut = new Map<string, any>();
+    nominaSige.forEach(s => {
+      const rut = s.runc.replace(/[^0-9Kk]/g, '').toUpperCase().replace(/^0+/, '');
+      if (!sigeUnicoPorRut.has(rut)) {
+        sigeUnicoPorRut.set(rut, s);
+      }
+    });
+
     const sedesMunicipales = await this.prisma.sede.findMany({
       where: { id: { in: idsMunicipales } }
     });
 
-    // 5. Construimos el reporte agrupado en memoria (Eficiencia 100%)
+    // 5. Construimos el reporte agrupado por Sede -> Alumno (con lista de talleres)
     return sedesMunicipales.map(sede => {
-      const alumnosEnEsteColegio = nominaSigeMatch
+      const alumnosEnEsteColegio = Array.from(sigeUnicoPorRut.values())
         .filter(s => s.sedeId === sede.id)
         .map(sige => {
-          // Buscamos la inscripción correspondiente normalizando ambos RUTs para el match final
-          const sigeRutLimpio = sige.runc.replace(/[^0-9K]/g, '');
-          const ins = inscripciones.find(i => i.alumno.rut.replace(/[^0-9K]/g, '') === sigeRutLimpio);
-          if (!ins) return null;
+          const rutLimpio = sige.runc.replace(/[^0-9Kk]/g, '').toUpperCase().replace(/^0+/, '');
+          const misInscripciones = inscripcionesPorRut.get(rutLimpio) || [];
+          
+          if (misInscripciones.length === 0) return null;
+
+          // Datos base del alumno desde su ficha en nuestra plataforma (prioritaria para nombres/apellidos)
+          const infoAlumno = misInscripciones[0].alumno;
           
           return {
-            id: ins.id, // <--- LA LLAVE MAESTRA REQUERIDA ✨🛡️🏎️
-            rut: ins.alumno.rut,
-            nombres: ins.alumno.nombres,
-            apellidos: ins.alumno.apellidos,
-            taller: ins.taller.nombre,
-            sedeTaller: ins.taller.sede.nombre,
-            fechaInscripcion: ins.fecha
+            id: infoAlumno.id,
+            rut: infoAlumno.rut,
+            nombres: infoAlumno.nombres,
+            apellidos: infoAlumno.apellidos,
+            // Agrupamos todos sus talleres, ordenados por fecha
+            talleres: misInscripciones
+              .map(i => ({
+                nombre: i.taller.nombre,
+                sede: i.taller.sede.nombre,
+                fecha: i.fecha
+              }))
+              .sort((a, b) => new Date(a.fecha).getTime() - new Date(b.fecha).getTime())
           };
         })
-        .filter(a => a !== null); // Solo incluimos si hay match real
+        .filter(a => a !== null);
 
       return {
         id: sede.id,
         nombre: sede.nombre,
-        totalInscritos: alumnosEnEsteColegio.length,
+        totalInscritos: alumnosEnEsteColegio.length, // Conteo de alumnos únicos
         alumnos: alumnosEnEsteColegio
       };
     });

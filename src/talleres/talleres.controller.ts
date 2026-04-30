@@ -220,14 +220,16 @@ export class TalleresController {
       }
     });
 
-    // Contamos inscripciones reales (Matrícula efectuada)
-    const totalInscritos = await this.talleresService['prisma'].inscripcion.count();
+    // Contamos inscripciones reales (Matrícula efectuada ACTIVA)
+    const totalInscritos = await this.talleresService['prisma'].inscripcion.count({
+      where: { activo: true }
+    });
     const cuposTotales = agregados._sum.cuposTotales || 0;
 
     return {
       capacidadSistemas: cuposTotales,
       matriculaEfectuada: totalInscritos,
-      vacantesRestantes: agregados._sum.cuposDisponibles || 0,
+      vacantesRestantes: cuposTotales - totalInscritos,
       ocupacionGlobal: cuposTotales > 0 
         ? Math.round((totalInscritos / cuposTotales) * 100) 
         : 0

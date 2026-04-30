@@ -55,4 +55,9 @@ export class CreateTallerDto {
   @IsOptional()
   @IsBoolean()
   activo?: boolean;
+
+  @IsArray()
+  @IsOptional()
+  @IsInt({ each: true })
+  profesores?: number[];
 }
