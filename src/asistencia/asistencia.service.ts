@@ -36,24 +36,23 @@ export class AsistenciaService {
       const autorId = usuarioId || dto.profesorId; // Prioridad al usuario logueado
 
       for (const item of dto.cambios) {
-        // ✅ Parsear por partes para evitar desfase UTC (new Date("YYYY-MM-DD") = UTC midnight
-        //    y setHours opera en hora local, retrocediendo el día en UTC-4)
-        const [y, m, d] = item.fecha.split('T')[0].split('-').map(Number);
-        const fechaDate = new Date(y, m - 1, d, 0, 0, 0, 0); // Medianoche HORA LOCAL
+        // ✅ Forzar Mediodía UTC para evitar desfases de zona horaria (mismo criterio que TalleresController)
+        const fechaDate = new Date(`${item.fecha.split('T')[0]}T12:00:00.000Z`);
 
-        const registro = await tx.asistencia.upsert({
+        // Borrar cualquier registro previo para este alumno/taller/día (independiente de la hora exacta) para evitar duplicados
+        const dStart = new Date(`${item.fecha.split('T')[0]}T00:00:00.000Z`);
+        const dEnd = new Date(`${item.fecha.split('T')[0]}T23:59:59.999Z`);
+        
+        await tx.asistencia.deleteMany({
           where: {
-            tallerId_alumnoId_fecha: {
-              tallerId: dto.tallerId,
-              alumnoId: item.alumnoId,
-              fecha: fechaDate
-            }
-          },
-          update: {
-            estado: item.estado,
-            registradoPor: autorId
-          },
-          create: {
+            tallerId: dto.tallerId,
+            alumnoId: item.alumnoId,
+            fecha: { gte: dStart, lte: dEnd }
+          }
+        });
+
+        const registro = await tx.asistencia.create({
+          data: {
             tallerId: dto.tallerId,
             alumnoId: item.alumnoId,
             fecha: fechaDate,
@@ -89,29 +88,28 @@ export class AsistenciaService {
 
   // Guardar o Actualizar Asistencia Masiva
   async registrarAsistencia(dto: TomarAsistenciaDto, usuarioId?: number) {
-    // ✅ Parsear por partes para evitar desfase UTC (new Date("YYYY-MM-DD") = UTC midnight
-    //    y setHours opera en hora local, retrocediendo el día en UTC-4 Chile)
-    const [y, m, d] = dto.fecha.split('T')[0].split('-').map(Number);
-    const fechaDate = new Date(y, m - 1, d, 0, 0, 0, 0); // Medianoche HORA LOCAL
     const autorId = usuarioId || dto.profesorId;
 
     return await this.prisma.$transaction(async (tx) => {
       const resultados: any[] = [];
+      
+      // ✅ Forzar Mediodía UTC para evitar desfases (mismo criterio que TalleresController)
+      const fechaDate = new Date(`${dto.fecha.split('T')[0]}T12:00:00.000Z`);
+      const dStart = new Date(`${dto.fecha.split('T')[0]}T00:00:00.000Z`);
+      const dEnd = new Date(`${dto.fecha.split('T')[0]}T23:59:59.999Z`);
 
+      // 1. Limpieza preventiva del día para este taller (Evita duplicados por desfase horario en la PK)
+      await tx.asistencia.deleteMany({
+        where: {
+          tallerId: dto.tallerId,
+          fecha: { gte: dStart, lte: dEnd }
+        }
+      });
+
+      // 2. Inserción masiva del nuevo estado
       for (const item of dto.lista) {
-        const registro = await tx.asistencia.upsert({
-          where: {
-            tallerId_alumnoId_fecha: {
-              tallerId: dto.tallerId,
-              alumnoId: item.alumnoId,
-              fecha: fechaDate
-            }
-          },
-          update: {
-            estado: item.estado,
-            registradoPor: autorId
-          },
-          create: {
+        const registro = await tx.asistencia.create({
+          data: {
             tallerId: dto.tallerId,
             alumnoId: item.alumnoId,
             fecha: fechaDate,

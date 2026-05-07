@@ -498,81 +498,67 @@ export class TalleresService {
   }
 
   async getRankingAsistencia(limit: number = 10, sedeId?: number) {
-    const where: any = {};
+    const where: any = { activo: true };
     if (sedeId) where.taller = { sedeId };
 
-    // 1. Obtener los IDs de alumnos que tienen al menos un registro de PRESENTE (fueron un día mínimo)
-    const resumenAsistencias = await this.prisma.asistencia.groupBy({
-      by: ['alumnoId'],
-      where: {
-        ...where,
-        estado: 'P'
-      },
-      _count: { _all: true }
-    });
-
-    if (resumenAsistencias.length === 0) return [];
-
-    const alumnoIds = resumenAsistencias.map(a => a.alumnoId);
-
-    // 2. Obtener detalles de los alumnos que además estén ACTIVOS en sus talleres
-    const alumnos = await this.prisma.alumno.findMany({
-      where: { 
-        id: { in: alumnoIds },
-        inscripciones: {
-          some: { 
-            activo: true,
-            taller: sedeId ? { sedeId } : {}
-          }
-        }
-      },
+    // 1. Obtener todas las inscripciones activas (donde reside el vínculo Alumno-Taller)
+    const inscripciones = await this.prisma.inscripcion.findMany({
+      where,
       include: {
-        establecimiento: true,
-        asistencias: { 
-          where,
-          orderBy: { fecha: 'desc' }
+        alumno: {
+          include: { establecimiento: true }
         },
-        inscripciones: {
-          where: { activo: true },
-          include: { 
-            taller: {
-              include: { sede: true }
-            }
-          }
-        }
+        taller: true
       }
     });
 
-    // 3. Mapear al formato extendido que espera el reporte del frontend
-    const ranking = alumnos.map(alumno => {
-      const asistencias = alumno.asistencias;
-      const total = asistencias.length;
-      const presentes = asistencias.filter(a => a.estado === 'P').length;
-      const ausentes = asistencias.filter(a => a.estado === 'A').length;
-      const justificados = asistencias.filter(a => a.estado === 'J').length;
+    if (inscripciones.length === 0) return [];
+
+    // 2. Obtener todas las asistencias para los talleres implicados
+    const tallerIds = Array.from(new Set(inscripciones.map(i => i.tallerId)));
+    const allAsistencias = await this.prisma.asistencia.findMany({
+      where: {
+        tallerId: { in: tallerIds }
+      }
+    });
+
+    // 3. Mapear y procesar datos por cada inscripción individual (Taller x Alumno)
+    const ranking = inscripciones.map(ins => {
+      // Filtrar asistencias que pertenecen específicamente a este alumno en este taller
+      const asistenciasTaller = allAsistencias.filter(a => 
+        a.alumnoId === ins.alumnoId && a.tallerId === ins.tallerId
+      );
+
+      const total = asistenciasTaller.length;
+      const presentes = asistenciasTaller.filter(a => a.estado === 'P').length;
+      const ausentes = asistenciasTaller.filter(a => a.estado === 'A').length;
+      const justificados = asistenciasTaller.filter(a => a.estado === 'J').length;
       
-      // La asistencia se considera Presente (P) o Justificado (J)
       const porcentaje = total > 0 
         ? Math.round(((presentes + justificados) / total) * 100) 
         : 0;
-      
+
       return {
-        id: alumno.id,
-        rut: alumno.rut,
-        nombre: `${alumno.nombres} ${alumno.apellidos}`,
-        establecimiento: alumno.establecimiento?.nombre || 'N/A',
-        taller: alumno.inscripciones.map(i => i.taller.nombre).join(', '),
+        id: ins.alumno.id,
+        rut: ins.alumno.rut,
+        nombre: `${ins.alumno.nombres} ${ins.alumno.apellidos}`,
+        establecimiento: ins.alumno.establecimiento?.nombre || 'N/A',
+        tallerId: ins.tallerId,
+        taller: ins.taller.nombre,
         totalSesiones: total,
         presentes,
         ausentes,
         justificados,
         porcentaje,
-        // Metadatos extra solicitados en auditorías previas
-        consentimientoImagen: alumno.inscripciones.some(i => i.usoImagen) ? 'SÍ' : 'NO'
+        consentimientoImagen: ins.usoImagen ? 'SÍ' : 'NO'
       };
     });
 
-    return ranking.sort((a, b) => b.porcentaje - a.porcentaje).slice(0, limit);
+    // Filtramos los que tengan asistencia (para el ranking) y retornamos según el límite
+    return ranking
+      .filter(r => r.totalSesiones > 0)
+      .sort((a, b) => b.porcentaje - a.porcentaje)
+      .slice(0, limit);
   }
 
   async getRankingAsistenciaProfesor(usuarioId: number, limit: number = 3) {
@@ -582,7 +568,16 @@ export class TalleresService {
     });
     const tallerIds = talleres.map(t => t.tallerId);
 
-    return this.getRankingAsistencia(limit, undefined); // Simplificado: usa el ranking general pero podría filtrarse por tallerIds
+    // Si no tiene talleres, no hay ranking
+    if (tallerIds.length === 0) return [];
+
+    // Obtenemos el ranking general (sin filtrar por sede para traer todos sus talleres)
+    const rankingGeneral = await this.getRankingAsistencia(100, undefined);
+    
+    // Filtramos para que solo aparezcan los talleres que dicta este profesor
+    return rankingGeneral
+      .filter(r => tallerIds.includes(r.tallerId))
+      .slice(0, limit);
   }
 
   async getAlumnosPorTaller(tallerId: number) {
@@ -619,8 +614,22 @@ export class TalleresService {
       }
     });
 
-    // 3. Generar las fechas habilitadas basadas en el horario
-    const fechasHabilitadas = this.generarFechasHabilitadas(taller.horarios);
+    // 3. Generar las fechas habilitadas basadas en el horario actual
+    const fechasProgramadas = this.generarFechasHabilitadas(taller.horarios);
+
+    // 3.1. Obtener fechas que ya tienen asistencia registrada (para que no desaparezcan si cambia el horario)
+    const asistenciasExistentes = await this.prisma.asistencia.findMany({
+      where: { tallerId },
+      select: { fecha: true },
+      distinct: ['fecha']
+    });
+
+    const fechasConRegistros = asistenciasExistentes.map(a => {
+      return a.fecha.toISOString().split('T')[0];
+    });
+
+    // 3.2. Combinar ambos conjuntos, eliminar duplicados y ordenar
+    const fechasHabilitadas = [...new Set([...fechasProgramadas, ...fechasConRegistros])].sort();
 
     // 4. Mapear alumnos para el frontend (asegurando el formato de asistencia)
     const alumnosMapeados = inscripciones.map(ins => {
