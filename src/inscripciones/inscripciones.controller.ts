@@ -636,6 +636,7 @@ export class InscripcionesController {
     return espera.map(item => ({
       id: item.id,
       posicion: item.posicion,
+      estado: item.estado,
       fechaSolicitud: item.fecha,
       alumno: {
         rut: item.alumno.rut,
@@ -1279,15 +1280,83 @@ export class InscripcionesController {
           data: { cuposDisponibles: { increment: 1 } }
         });
       } else {
+        const espera = await tx.listaEspera.findUnique({
+          where: { id: +id }
+        });
+        if (!espera) throw new NotFoundException('Registro de lista de espera no encontrado.');
+
         record = await tx.listaEspera.update({
           where: { id: +id },
-          data: { estado: 'RECHAZADA' }
+          data: { estado: 'RECHAZADA', posicion: 0 }
         });
+
+        // Recalcular posiciones del taller si estaba activo
+        if (espera.estado !== 'RECHAZADA') {
+          const restantes = await tx.listaEspera.findMany({
+            where: { 
+              tallerId: espera.tallerId, 
+              posicion: { gt: espera.posicion },
+              estado: { in: ['ACTIVA', 'PENDIENTE_CONTACTO'] }
+            },
+            orderBy: { posicion: 'asc' }
+          });
+          for (const [index, r] of restantes.entries()) {
+            const nuevaPos = espera.posicion + index;
+            await tx.listaEspera.update({
+              where: { id: r.id },
+              data: { posicion: nuevaPos }
+            });
+          }
+        }
       }
 
       await this.auditService.log('UPDATE', 'InscripcionRechazada', +id, `Registro rechazado (sin correo) por coordinador: ${req.user.nombre}`, req.user.nombre);
 
       return { status: 'SUCCESS', message: 'Registro rechazado exitosamente.' };
+    });
+  }
+
+  @Patch('coordinador/reactivar-espera/:id')
+  @UseGuards(AuthGuard('jwt'))
+  async reactivarEsperaCoordinador(
+    @Param('id') id: string, 
+    @Req() req: any
+  ) {
+    this.checkAdminOrCoordinador(req.user);
+    const searchId = +id;
+
+    return this.prisma.$transaction(async (tx) => {
+      const espera = await tx.listaEspera.findUnique({
+        where: { id: searchId }
+      });
+
+      if (!espera) {
+        throw new NotFoundException('Registro de lista de espera no encontrado.');
+      }
+
+      if (espera.estado !== 'RECHAZADA') {
+        throw new BadRequestException('El registro no está en estado rechazado.');
+      }
+
+      // Count active entries to get the new position
+      const totalActivos = await tx.listaEspera.count({
+        where: { 
+          tallerId: espera.tallerId,
+          estado: { in: ['ACTIVA', 'PENDIENTE_CONTACTO'] }
+        }
+      });
+
+      const record = await tx.listaEspera.update({
+        where: { id: searchId },
+        data: { 
+          estado: 'ACTIVA',
+          posicion: totalActivos + 1
+        }
+      });
+
+      await this.auditService.log('UPDATE', 'ListaEsperaReactivada', searchId, `Registro reactivado en lista de espera por: ${req.user.nombre}`, req.user.nombre);
+
+      return { status: 'SUCCESS', message: 'Registro reactivado exitosamente.' };
     });
   }
 
