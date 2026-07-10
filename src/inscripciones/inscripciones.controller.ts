@@ -1,4 +1,4 @@
-import { Controller, Post, Body, BadRequestException, Get, Param, Res, HttpStatus, Inject, UseGuards, Req, UnauthorizedException, Query, Patch, NotFoundException } from '@nestjs/common';
+import { Controller, Post, Body, BadRequestException, Get, Param, Res, HttpStatus, Inject, UseGuards, Req, UnauthorizedException, Query, Patch, NotFoundException, HttpException, InternalServerErrorException } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { AuthGuard } from '@nestjs/passport';
 import type { Cache } from 'cache-manager';
@@ -195,124 +195,150 @@ export class InscripcionesController {
     const searchId = +id;
     const isEspera = tipo.toUpperCase() === 'ESPERA';
 
-    return this.prisma.$transaction(async (tx) => {
-      // 1. Obtener la entidad base real
-      let ficha: any;
-      if (!isEspera) {
-        ficha = await tx.inscripcion.findUnique({ where: { id: searchId }, include: { alumno: true } });
-      } else {
-        ficha = await tx.listaEspera.findUnique({ where: { id: searchId }, include: { alumno: true } });
-      }
-
-      if (!ficha) throw new BadRequestException('Ficha original no encontrada para edición.');
-
-      // 2. 🛡️ Actualizar Información del Alumno
-      if (payload.alumno) {
-        let establecimientoId = ficha.alumno.establecimientoId;
-        if (payload.alumno.establecimientoNombre) {
-            const estMatch = await tx.establecimiento.findFirst({
-                where: { nombre: { contains: payload.alumno.establecimientoNombre.trim() } }
-            });
-            if (estMatch) {
-                establecimientoId = estMatch.id;
-            } else {
-                const nuevoEst = await tx.establecimiento.create({ data: { nombre: payload.alumno.establecimientoNombre.trim() } });
-                establecimientoId = nuevoEst.id;
-            }
-        }
-        await tx.alumno.update({
-          where: { id: ficha.alumnoId },
-          data: {
-            rut: payload.alumno.rut ? payload.alumno.rut.trim().toUpperCase().replace(/[^0-9K]/g, '') : undefined,
-            nombres: payload.alumno.nombres,
-            apellidos: payload.alumno.apellidos,
-            establecimientoId,
-          }
-        });
-      }
-
-      // 3. 🛡️ Actualizar Información Sensible del Apoderado
-      const apoderadoIdTarget = ficha.alumno.apoderadoId || ficha.apoderadoId;
-      if (payload.apoderado && apoderadoIdTarget) {
-        const apoUpdate: any = {
-           nombre: payload.apoderado.nombre ? payload.apoderado.nombre.trim().toUpperCase() : undefined,
-           email: payload.apoderado.email ? payload.apoderado.email.toLowerCase().trim() : undefined,
-           telefono: payload.apoderado.telefono
-        };
-        
-        // AUTO-HEALING SYNC: Si el admin corrige el RUT del apoderado, regeneramos la contraseña
-        if (payload.apoderado.rut) {
-           const cleanRut = payload.apoderado.rut.trim().toUpperCase().replace(/[^0-9K]/g, '');
-           apoUpdate.rut = cleanRut;
-           apoUpdate.password = await bcrypt.hash(cleanRut, 5); 
-        }
-
-        await tx.apoderado.update({
-          where: { id: apoderadoIdTarget },
-          data: apoUpdate
-        });
-      }
-
-      // 4. 🛡️ Actualizar Perfil de Salud y Criterios Directos en la Ficha
-      const fichaUpdateData: any = {};
-      
-      if (payload.parentesco !== undefined) fichaUpdateData.parentesco = payload.parentesco;
-      if (payload.salud) {
-        if (payload.salud.enfermedadCronica !== undefined) fichaUpdateData.enfermedadCronica = payload.salud.enfermedadCronica;
-        if (payload.salud.enfermedadCronicaDetalle !== undefined) fichaUpdateData.enfermedadCronicaDetalle = payload.salud.enfermedadCronicaDetalle;
-        if (payload.salud.tratamientoMedico !== undefined) fichaUpdateData.tratamientoMedico = payload.salud.tratamientoMedico;
-        if (payload.salud.alergias !== undefined) fichaUpdateData.alergias = payload.salud.alergias;
-        if (payload.salud.necesidadesEspeciales !== undefined) fichaUpdateData.necesidadesEspeciales = payload.salud.necesidadesEspeciales;
-        if (payload.salud.necesidadesEspecialesDetalle !== undefined) fichaUpdateData.necesidadesEspecialesDetalle = payload.salud.necesidadesEspecialesDetalle;
-        if (payload.salud.apoyoEscolar !== undefined) fichaUpdateData.apoyoEscolar = payload.salud.apoyoEscolar;
-        if (payload.salud.activo !== undefined) fichaUpdateData.activo = payload.salud.activo;
-      }
-
-      if (Object.keys(fichaUpdateData).length > 0) {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        // 1. Obtener la entidad base real con relaciones cargadas
+        let ficha: any;
         if (!isEspera) {
-          // LÓGICA DE CUPOS SI CAMBIA EL ESTADO ACTIVO
-          if (fichaUpdateData.activo !== undefined && fichaUpdateData.activo !== ficha.activo) {
-             const tallerId = ficha.tallerId;
-             if (fichaUpdateData.activo === false) {
-                 // Desertar: Liberar cupo
-                 await tx.taller.update({
-                     where: { id: tallerId },
-                     data: { cuposDisponibles: { increment: 1 } }
-                 });
-             } else {
-                 // Re-activar: Ocupar cupo (si hay)
-                 const taller = await tx.taller.findUnique({ where: { id: tallerId } });
-                 if (!taller) throw new BadRequestException('El taller de la inscripción no existe.');
-                 
-                 if (taller.cuposDisponibles <= 0) {
-                     throw new BadRequestException('No se puede re-activar al alumno: El taller ya no tiene cupos disponibles.');
-                 }
-                 await tx.taller.update({
-                     where: { id: tallerId },
-                     data: { cuposDisponibles: { decrement: 1 } }
-                 });
+          ficha = await tx.inscripcion.findUnique({
+            where: { id: searchId },
+            include: { alumno: { include: { apoderado: true } } }
+          });
+        } else {
+          ficha = await tx.listaEspera.findUnique({
+            where: { id: searchId },
+            include: { alumno: { include: { apoderado: true } } }
+          });
+        }
+
+        if (!ficha) throw new BadRequestException('Ficha original no encontrada para edición.');
+
+        // 2. 🛡️ Actualizar Información del Alumno
+        if (payload.alumno) {
+          let establecimientoId = ficha.alumno.establecimientoId;
+          if (payload.alumno.establecimientoNombre) {
+              const estMatch = await tx.establecimiento.findFirst({
+                  where: { nombre: { contains: payload.alumno.establecimientoNombre.trim() } }
+              });
+              if (estMatch) {
+                  establecimientoId = estMatch.id;
+              } else {
+                  const nuevoEst = await tx.establecimiento.create({ data: { nombre: payload.alumno.establecimientoNombre.trim() } });
+                  establecimientoId = nuevoEst.id;
+              }
+          }
+          await tx.alumno.update({
+            where: { id: ficha.alumnoId },
+            data: {
+              rut: payload.alumno.rut ? payload.alumno.rut.trim().toUpperCase().replace(/[^0-9K]/g, '') : undefined,
+              nombres: payload.alumno.nombres ? payload.alumno.nombres.trim() : undefined,
+              apellidos: payload.alumno.apellidos ? payload.alumno.apellidos.trim() : undefined,
+              establecimientoId,
+            }
+          });
+        }
+
+        // 3. 🛡️ Actualizar Información Sensible del Apoderado
+        const apoderadoIdTarget = ficha.alumno.apoderadoId || ficha.apoderadoId;
+        if (payload.apoderado && apoderadoIdTarget) {
+          const apoUpdate: any = {
+             nombre: payload.apoderado.nombre ? payload.apoderado.nombre.trim().toUpperCase() : undefined,
+             email: payload.apoderado.email ? payload.apoderado.email.toLowerCase().trim() : undefined,
+             telefono: payload.apoderado.telefono ? payload.apoderado.telefono.trim() : undefined
+          };
+          
+          // AUTO-HEALING & OPTIMIZATION SYNC: Solo regenerar password si el RUT realmente cambió
+          if (payload.apoderado.rut) {
+             const cleanRut = payload.apoderado.rut.trim().toUpperCase().replace(/[^0-9K]/g, '');
+             const currentRut = (ficha.alumno.apoderado?.rut || '').trim().toUpperCase().replace(/[^0-9K]/g, '');
+             
+             if (cleanRut !== currentRut) {
+                apoUpdate.rut = cleanRut;
+                apoUpdate.password = await bcrypt.hash(cleanRut, 5); 
              }
           }
-          await tx.inscripcion.update({ where: { id: searchId }, data: fichaUpdateData });
-        } else {
-          await tx.listaEspera.update({ where: { id: searchId }, data: fichaUpdateData });
+
+          await tx.apoderado.update({
+            where: { id: apoderadoIdTarget },
+            data: apoUpdate
+          });
         }
+
+        // 4. 🛡️ Actualizar Perfil de Salud y Criterios Directos en la Ficha
+        const fichaUpdateData: any = {};
+        
+        if (payload.parentesco !== undefined) fichaUpdateData.parentesco = payload.parentesco;
+        if (payload.salud) {
+          if (payload.salud.enfermedadCronica !== undefined) fichaUpdateData.enfermedadCronica = payload.salud.enfermedadCronica;
+          if (payload.salud.enfermedadCronicaDetalle !== undefined) fichaUpdateData.enfermedadCronicaDetalle = payload.salud.enfermedadCronicaDetalle;
+          if (payload.salud.tratamientoMedico !== undefined) fichaUpdateData.tratamientoMedico = payload.salud.tratamientoMedico;
+          if (payload.salud.alergias !== undefined) fichaUpdateData.alergias = payload.salud.alergias;
+          if (payload.salud.necesidadesEspeciales !== undefined) fichaUpdateData.necesidadesEspeciales = payload.salud.necesidadesEspeciales;
+          if (payload.salud.necesidadesEspecialesDetalle !== undefined) fichaUpdateData.necesidadesEspecialesDetalle = payload.salud.necesidadesEspecialesDetalle;
+          if (payload.salud.apoyoEscolar !== undefined) fichaUpdateData.apoyoEscolar = payload.salud.apoyoEscolar;
+          // El campo 'activo' solo existe en Inscripcion, no en ListaEspera
+          if (payload.salud.activo !== undefined && !isEspera) {
+            fichaUpdateData.activo = payload.salud.activo;
+          }
+        }
+
+        if (Object.keys(fichaUpdateData).length > 0) {
+          if (!isEspera) {
+            // LÓGICA DE CUPOS SI CAMBIA EL ESTADO ACTIVO
+            if (fichaUpdateData.activo !== undefined && fichaUpdateData.activo !== ficha.activo) {
+               const tallerId = ficha.tallerId;
+               if (fichaUpdateData.activo === false) {
+                    // Desertar: Liberar cupo
+                    await tx.taller.update({
+                        where: { id: tallerId },
+                        data: { cuposDisponibles: { increment: 1 } }
+                    });
+               } else {
+                    // Re-activar: Ocupar cupo (si hay)
+                    const taller = await tx.taller.findUnique({ where: { id: tallerId } });
+                    if (!taller) throw new BadRequestException('El taller de la inscripción no existe.');
+                    
+                    if (taller.cuposDisponibles <= 0) {
+                        throw new BadRequestException('No se puede re-activar al alumno: El taller ya no tiene cupos disponibles.');
+                    }
+                    await tx.taller.update({
+                        where: { id: tallerId },
+                        data: { cuposDisponibles: { decrement: 1 } }
+                    });
+               }
+            }
+            await tx.inscripcion.update({ where: { id: searchId }, data: fichaUpdateData });
+          } else {
+            await tx.listaEspera.update({ where: { id: searchId }, data: fichaUpdateData });
+          }
+        }
+
+        return { 
+          status: 'SUCCESS', 
+          message: 'Ficha Clínica y Académica actualizada exitosamente.',
+          fichaOriginalStatus: isEspera ? undefined : ficha.activo 
+        };
+      }).then(result => {
+        // Disparamos log fuera del scope transaccional explícito
+        let detalleCompleto = `Ficha editada. Datos: ${JSON.stringify(payload)}`;
+        if (payload.salud?.activo === false) detalleCompleto = `DESERCIÓN: El alumno fue dado de baja del taller. ${detalleCompleto}`;
+        if (payload.salud?.activo === true && result.fichaOriginalStatus === false) detalleCompleto = `RE-ACTIVACIÓN: El alumno fue re-incorporado al taller. ${detalleCompleto}`;
+
+        this.auditService.log('UPDATE', !isEspera ? 'Inscripcion' : 'ListaEspera', searchId, detalleCompleto, req.user.nombre);
+        return { status: result.status, message: result.message };
+      });
+    } catch (error) {
+      console.error('Error in updateFichaInscripcion handler:', error);
+      if (error instanceof HttpException) {
+        throw error;
       }
-
-      return { 
-        status: 'SUCCESS', 
-        message: 'Ficha Clínica y Académica actualizada exitosamente.',
-        fichaOriginalStatus: ficha.activo 
-      };
-    }).then(result => {
-      // Disparamos log fuera del scope transaccional explícito
-      let detalleCompleto = `Ficha editada. Datos: ${JSON.stringify(payload)}`;
-      if (payload.salud?.activo === false) detalleCompleto = `DESERCIÓN: El alumno fue dado de baja del taller. ${detalleCompleto}`;
-      if (payload.salud?.activo === true && result.fichaOriginalStatus === false) detalleCompleto = `RE-ACTIVACIÓN: El alumno fue re-incorporado al taller. ${detalleCompleto}`;
-
-      this.auditService.log('UPDATE', !isEspera ? 'Inscripcion' : 'ListaEspera', searchId, detalleCompleto, req.user.nombre);
-      return { status: result.status, message: result.message };
-    });
+      // Capturar fallas comunes de base de datos
+      if (error.code === 'P2002') {
+        const target = error.meta?.target || '';
+        throw new BadRequestException(`Conflicto de clave única: Ya existe un registro con esos datos (${target}).`);
+      }
+      throw new InternalServerErrorException(`Error interno del servidor al actualizar la ficha: ${error.message || error}`);
+    }
   }
 
   // 🚀 PROMOCIÓN DE CUPOS: De Espera a Inscrito Oficial
