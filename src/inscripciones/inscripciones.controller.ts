@@ -1124,9 +1124,10 @@ export class InscripcionesController {
     const user = req.user;
     const esEncargado = user.roles?.some((r: string) => r.toUpperCase() === 'ENCARGADO_ESCUELA');
     const esAdmin = user.roles?.some((r: string) => r.toUpperCase() === 'ADMIN');
+    const esCoordinador = user.roles?.some((r: string) => r.toUpperCase() === 'COORDINADOR');
 
-    if (!esEncargado && !esAdmin) {
-      throw new UnauthorizedException('Acceso denegado. Solo Encargados o Admins.');
+    if (!esEncargado && !esAdmin && !esCoordinador) {
+      throw new UnauthorizedException('Acceso denegado. Solo Encargados, Coordinadores o Admins.');
     }
 
     return this.prisma.$transaction(async (tx) => {
