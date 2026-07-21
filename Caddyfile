@@ -1,0 +1,3 @@
+api.after.eduhuechuraba.cl, after.eduhuechuraba.cl, www.after.eduhuechuraba.cl {
+    reverse_proxy backend:3007
+}

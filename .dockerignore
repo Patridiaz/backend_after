@@ -1,0 +1,14 @@
+node_modules
+dist
+.git
+.gitignore
+.prettierrc
+eslint.config.mjs
+pnpm-lock.yaml
+Dockerfile
+docker-compose.yml
+Caddyfile
+.env
+README.md
+scratch
+npm-debug.log
