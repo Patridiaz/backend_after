@@ -7,3 +7,8 @@ api.ticket.eduhuechuraba.cl {
     # y busque en el puerto 4100 de la máquina host (donde corre nuestro nuevo backend)
     reverse_proxy host.docker.internal:4100
 }
+
+api.compras.eduhuechuraba.cl {
+    # host.docker.internal redirige al puerto 3008 del host, donde correrá el backend de compras
+    reverse_proxy host.docker.internal:3008
+}
