@@ -1,3 +1,7 @@
 api.after.eduhuechuraba.cl {
     reverse_proxy backend:3007
 }
+
+api.ticket.eduhuechuraba.cl {
+    reverse_proxy host.docker.internal:4100
+}
