@@ -3,5 +3,7 @@ api.after.eduhuechuraba.cl {
 }
 
 api.ticket.eduhuechuraba.cl {
+    # host.docker.internal le indica a Caddy que salga del contenedor 
+    # y busque en el puerto 4100 de la máquina host (donde corre nuestro nuevo backend)
     reverse_proxy host.docker.internal:4100
 }
